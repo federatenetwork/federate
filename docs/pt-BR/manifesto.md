@@ -1,6 +1,6 @@
 # Federate Network
 
-> [English version](../manifesto.md)
+> [English version](../en-US/manifesto.md)
 
 > Este manifesto também vive em `http://home.fed/manifesto.html` (com seletor pt-BR / en-US).
 

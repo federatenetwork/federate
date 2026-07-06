@@ -1,6 +1,6 @@
 # Decentralization model
 
-> [Versão em português (pt-BR)](pt-BR/decentralization.md)
+> [Versão em português (pt-BR)](../pt-BR/decentralization.md)
 
 Federate Network separates **authority** from **infrastructure**.
 

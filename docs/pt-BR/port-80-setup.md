@@ -1,6 +1,6 @@
 # Configuração da porta 80: URLs sem porta
 
-> [English version](../port-80-setup.md)
+> [English version](../en-US/port-80-setup.md)
 
 Toda a experiência do usuário é `http://home.fed`, **sem porta**. Os navegadores
 usam a porta 80 para `http://` simples, então o `federated` precisa escutar em

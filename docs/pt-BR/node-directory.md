@@ -1,6 +1,6 @@
 # Diretório de nós
 
-> [English version](../node-directory.md)
+> [English version](../en-US/node-directory.md)
 
 O diretório de nós rastreia os nós de infraestrutura Federate ativos. O
 Node 1 hospeda o diretório oficial; `federate-directory` é uma biblioteca,

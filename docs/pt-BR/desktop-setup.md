@@ -1,6 +1,6 @@
 # Configuração no Desktop: Como um Amigo Entra na Rede
 
-> [English version](../desktop-setup.md)
+> [English version](../en-US/desktop-setup.md)
 
 Objetivo: digitar `http://home.fed` no Chrome/Safari/Firefox/Edge e entrar na
 Federate Network.

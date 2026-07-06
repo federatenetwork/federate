@@ -1,6 +1,6 @@
 # Solução de problemas
 
-> [English version](../troubleshooting.md)
+> [English version](../en-US/troubleshooting.md)
 
 Primeiro passo, sempre:
 

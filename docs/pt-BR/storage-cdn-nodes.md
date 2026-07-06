@@ -1,6 +1,6 @@
 # Nós de storage e CDN
 
-> [English version](../storage-cdn-nodes.md)
+> [English version](../en-US/storage-cdn-nodes.md)
 
 Nós de storage e CDN guardam blocos endereçados por conteúdo e os servem aos
 gateways. Eles **nunca são retornados aos navegadores pelo DNS**; navegadores falam com

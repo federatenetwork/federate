@@ -1,6 +1,6 @@
 # Running a Federate node
 
-> [Versão em português (pt-BR)](pt-BR/nodes.md)
+> [Versão em português (pt-BR)](../pt-BR/nodes.md)
 
 Anyone can run Federate infrastructure. A node is identified by an Ed25519
 keypair generated on first run; its public key is its `node_id`.

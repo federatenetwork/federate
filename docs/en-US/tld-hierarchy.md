@@ -1,6 +1,6 @@
 # The Federate TLD Hierarchy
 
-> [Versão em português (pt-BR)](pt-BR/tld-hierarchy.md)
+> [Versão em português (pt-BR)](../pt-BR/tld-hierarchy.md)
 
 Federate Network runs a parallel web namespace with its own root. The root
 layer does not sell every domain directly forever; it controls **which TLDs

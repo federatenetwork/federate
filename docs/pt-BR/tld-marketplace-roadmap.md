@@ -1,6 +1,6 @@
 # Roadmap do Marketplace de TLDs
 
-> [English version](../tld-marketplace-roadmap.md)
+> [English version](../en-US/tld-marketplace-roadmap.md)
 
 O Federate controla a raiz; os TLDs serão delegados a operadores; os
 operadores vendem domínios dentro dos seus TLDs. **Nenhum pagamento está
@@ -22,7 +22,7 @@ Node 1).
 todas as listas de bloqueio) ao Node 1; registros de TLD `pending` aparecem na
 zona raiz; o administrador da raiz aprova/rejeita (`federate tld approve
 --owner <pk> --operator <pk>`). As APIs de mutação usam requisições assinadas
-com proteção contra replay via nonce/desafio (ver docs/signatures.md). Ainda
+com proteção contra replay via nonce/desafio (ver docs/pt-BR/signatures.md). Ainda
 sem dinheiro.
 
 ## Fase 3: compra de TLD / integração de pagamento

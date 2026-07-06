@@ -1,6 +1,6 @@
 # Nós DNS
 
-> [English version](../dns-nodes.md)
+> [English version](../en-US/dns-nodes.md)
 
 O `federate-dnsd` é um servidor DNS autoritativo para os TLDs Federate. Qualquer pessoa pode
 rodar um.

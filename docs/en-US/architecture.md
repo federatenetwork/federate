@@ -1,6 +1,6 @@
 # Architecture
 
-> [Versão em português (pt-BR)](pt-BR/architecture.md)
+> [Versão em português (pt-BR)](../pt-BR/architecture.md)
 
 ## Layers
 

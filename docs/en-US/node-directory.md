@@ -1,6 +1,6 @@
 # Node directory
 
-> [Versão em português (pt-BR)](pt-BR/node-directory.md)
+> [Versão em português (pt-BR)](../pt-BR/node-directory.md)
 
 The node directory tracks live Federate infrastructure nodes. Node 1 hosts
 the official directory; `federate-directory` is a library, so other directory

@@ -1,6 +1,6 @@
 # Nós gateway
 
-> [English version](../gateway-nodes.md)
+> [English version](../en-US/gateway-nodes.md)
 
 O `federate-gatewayd` serve sites Federate para navegadores comuns. Qualquer pessoa pode rodar
 um; o DNS do Federate anuncia todos os gateways saudáveis.

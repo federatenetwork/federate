@@ -1,6 +1,6 @@
 # Gateway nodes
 
-> [Versão em português (pt-BR)](pt-BR/gateway-nodes.md)
+> [Versão em português (pt-BR)](../pt-BR/gateway-nodes.md)
 
 `federate-gatewayd` serves Federate sites to normal browsers. Anyone can run
 one; Federate DNS advertises all healthy gateways.

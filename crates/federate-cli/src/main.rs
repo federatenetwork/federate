@@ -452,7 +452,7 @@ async fn root_cmd(cli: &Ctx, cmd: RootCmd) {
                     );
                     println!(
                         "note: this verifies self-consistency of the served zone. Your daemon \
-                         additionally pins the root key as a trust anchor (see docs/signatures.md)."
+                         additionally pins the root key as a trust anchor (see docs/en-US/signatures.md)."
                     );
                     if bad > 0 {
                         std::process::exit(1);
@@ -517,7 +517,9 @@ async fn tld_cmd(cli: &Ctx, cmd: TldCmd) {
                         v["tld"].as_str().unwrap_or(&tld)
                     );
                     println!("TLD applications are not open yet (marketplace phase 2).");
-                    println!("See docs/tld-marketplace-roadmap.md; no payments are implemented.");
+                    println!(
+                        "See docs/en-US/tld-marketplace-roadmap.md; no payments are implemented."
+                    );
                 }
                 Ok(v) => die(&format!(
                     "cannot apply for .{}: {}",
@@ -903,7 +905,7 @@ fn port_check() {
         Err(e) => {
             println!("cannot bind 127.0.0.1:80: {e}");
             println!("if federated is already running, this is expected.");
-            println!("otherwise see docs/port-80-setup.md:");
+            println!("otherwise see docs/en-US/port-80-setup.md:");
             println!(
                 "  linux:   sudo setcap 'cap_net_bind_service=+ep' ./target/release/federated"
             );
@@ -965,7 +967,7 @@ async fn doctor(cli: &Ctx) {
                 println!(
                     "[!!] port 80 is free but the daemon is up; the gateway is NOT on port 80"
                 );
-                println!("     portless URLs like http://home.fed will not work; see docs/port-80-setup.md");
+                println!("     portless URLs like http://home.fed will not work; see docs/en-US/port-80-setup.md");
             } else {
                 println!("[ok] port 80 available for federated");
             }
@@ -992,7 +994,7 @@ async fn doctor(cli: &Ctx) {
             } else {
                 problems += 1;
                 println!("[!!] hosts file has no Federate entries");
-                println!("     fix: add mappings from docs/hosts-setup.md to {hosts_path}");
+                println!("     fix: add mappings from docs/en-US/hosts-setup.md to {hosts_path}");
             }
         }
         Err(e) => {
@@ -1038,7 +1040,7 @@ async fn doctor(cli: &Ctx) {
     if problems == 0 {
         println!("all checks passed. Open http://home.fed");
     } else {
-        println!("{problems} problem(s) found. See docs/troubleshooting.md");
+        println!("{problems} problem(s) found. See docs/en-US/troubleshooting.md");
         std::process::exit(1);
     }
 }

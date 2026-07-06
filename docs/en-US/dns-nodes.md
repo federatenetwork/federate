@@ -1,6 +1,6 @@
 # DNS nodes
 
-> [Versão em português (pt-BR)](pt-BR/dns-nodes.md)
+> [Versão em português (pt-BR)](../pt-BR/dns-nodes.md)
 
 `federate-dnsd` is an authoritative DNS server for Federate TLDs. Anyone can
 run one.

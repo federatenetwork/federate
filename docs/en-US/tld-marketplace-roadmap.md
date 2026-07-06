@@ -1,6 +1,6 @@
 # TLD Marketplace Roadmap
 
-> [Versão em português (pt-BR)](pt-BR/tld-marketplace-roadmap.md)
+> [Versão em português (pt-BR)](../pt-BR/tld-marketplace-roadmap.md)
 
 Federate controls the root; TLDs will be delegated to operators; operators
 sell domains inside their TLDs. **No payments are implemented today.** This
@@ -20,7 +20,7 @@ Admin mutations are seed-data-only (edit blocklists / sites, restart Node 1).
 all blocklists) to Node 1; `pending` TLD records appear in the root zone;
 root admin approves/rejects (`federate tld approve --owner <pk> --operator
 <pk>`). Mutation APIs use signed requests with nonce/challenge replay
-protection (see docs/signatures.md). Still no money.
+protection (see docs/en-US/signatures.md). Still no money.
 
 ## Phase 3: TLD purchase / payment integration
 

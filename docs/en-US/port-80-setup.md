@@ -1,6 +1,6 @@
 # Port 80 Setup: Portless URLs
 
-> [Versão em português (pt-BR)](pt-BR/port-80-setup.md)
+> [Versão em português (pt-BR)](../pt-BR/port-80-setup.md)
 
 The whole user experience is `http://home.fed` with **no port**. Browsers use
 port 80 for plain `http://`, so `federated` must bind `127.0.0.1:80`.

@@ -1,6 +1,6 @@
 # Hosts-file Setup (MVP)
 
-> [Versão em português (pt-BR)](pt-BR/hosts-setup.md)
+> [Versão em português (pt-BR)](../pt-BR/hosts-setup.md)
 
 Until the local DNS resolver ships (phase 3), map Federate domains to the
 local daemon by hand.
@@ -16,7 +16,7 @@ local daemon by hand.
 127.0.0.1 home.fed
 ```
 
-A ready-to-append copy lives at [`deploy/hosts-federate.txt`](../deploy/hosts-federate.txt).
+A ready-to-append copy lives at [`deploy/hosts-federate.txt`](../../deploy/hosts-federate.txt).
 
 ## Verify
 

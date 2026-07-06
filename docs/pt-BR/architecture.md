@@ -1,6 +1,6 @@
 # Arquitetura
 
-> [English version](../architecture.md)
+> [English version](../en-US/architecture.md)
 
 ## Camadas
 

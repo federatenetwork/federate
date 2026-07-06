@@ -1,6 +1,6 @@
 # Protocolo Federate (MVP)
 
-> [English version](../protocol.md)
+> [English version](../en-US/protocol.md)
 
 ## Zona raiz
 

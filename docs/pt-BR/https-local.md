@@ -1,6 +1,6 @@
 # HTTPS interno e CA raiz local do Federate (Planejado)
 
-> [English version](../https-local.md)
+> [English version](../en-US/https-local.md)
 
 ## Posição no MVP
 

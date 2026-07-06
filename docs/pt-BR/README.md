@@ -1,6 +1,6 @@
 # Federate Network
 
-> [English version](../README.md)
+> [English version](../en-US/README.md)
 
 Um protocolo/runtime de web alternativa e humana que roda sobre a internet existente.
 

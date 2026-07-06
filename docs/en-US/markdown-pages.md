@@ -1,6 +1,6 @@
 # Markdown pages (`fed-md.js`)
 
-> [Versão em português (pt-BR)](pt-BR/markdown-pages.md)
+> [Versão em português (pt-BR)](../pt-BR/markdown-pages.md)
 
 Official Federate pages are written as plain markdown files and rendered in
 the browser by `fed-md.js`: a zero-dependency, XSS-safe renderer that any

@@ -112,7 +112,7 @@ impl Default for DaemonConfig {
 /// Signatures must never depend on JSON whitespace or field order. Canonical
 /// form is compact JSON with object keys sorted lexicographically at every
 /// nesting level (arrays keep their order). Signed structs set their
-/// `signature` field to None before canonicalization. See docs/signatures.md.
+/// `signature` field to None before canonicalization. See docs/en-US/signatures.md.
 pub mod canonical {
     use serde::Serialize;
 

@@ -1,6 +1,6 @@
 # Desktop Setup: How a Friend Joins
 
-> [Versão em português (pt-BR)](pt-BR/desktop-setup.md)
+> [Versão em português (pt-BR)](../pt-BR/desktop-setup.md)
 
 Goal: type `http://home.fed` in Chrome/Safari/Firefox/Edge and enter the
 Federate Network.

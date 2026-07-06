@@ -1,6 +1,6 @@
 # Root mirrors
 
-> [Versão em português (pt-BR)](pt-BR/root-mirrors.md)
+> [Versão em português (pt-BR)](../pt-BR/root-mirrors.md)
 
 A root mirror distributes signed root zone copies so the network does not
 depend on one VPS. Mirrors **cannot create or modify TLDs**, and the crypto

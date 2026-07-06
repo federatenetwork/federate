@@ -31,24 +31,24 @@ cargo build --release
 sudo ./target/release/federated --bootstrap http://127.0.0.1:9000    # daemon on port 80
 ```
 
-Add hosts-file mappings ([hosts-setup.md](docs/hosts-setup.md)), then open **http://home.fed**.
+Add hosts-file mappings ([hosts-setup.md](docs/en-US/hosts-setup.md)), then open **http://home.fed**.
 
 ## Docs
 
-- [architecture.md](docs/architecture.md) - crates, layers, resolution engine
-- [protocol.md](docs/protocol.md) - root zone, manifests, content addressing
-- [manifesto.md](docs/manifesto.md) - why Federate exists
-- [dns-resolver.md](docs/dns-resolver.md) - planned local DNS resolver
-- [deployment-vps.md](docs/deployment-vps.md) - deploying Node 1
-- [desktop-setup.md](docs/desktop-setup.md) - friend onboarding
-- [hosts-setup.md](docs/hosts-setup.md) - hosts-file mappings
-- [port-80-setup.md](docs/port-80-setup.md) - portless URLs
-- [https-local.md](docs/https-local.md) - internal HTTPS / local CA plans
-- [tld-hierarchy.md](docs/tld-hierarchy.md) - root registry, TLD operators, delegation
-- [signatures.md](docs/signatures.md) - chain of trust, canonical signing
-- [blocked-tlds.md](docs/blocked-tlds.md) - IANA/reserved/policy blocklists
-- [tld-marketplace-roadmap.md](docs/tld-marketplace-roadmap.md) - future marketplace phases
-- [troubleshooting.md](docs/troubleshooting.md)
+- [architecture.md](docs/en-US/architecture.md) - crates, layers, resolution engine
+- [protocol.md](docs/en-US/protocol.md) - root zone, manifests, content addressing
+- [manifesto.md](docs/en-US/manifesto.md) - why Federate exists
+- [dns-resolver.md](docs/en-US/dns-resolver.md) - planned local DNS resolver
+- [deployment-vps.md](docs/en-US/deployment-vps.md) - deploying Node 1
+- [desktop-setup.md](docs/en-US/desktop-setup.md) - friend onboarding
+- [hosts-setup.md](docs/en-US/hosts-setup.md) - hosts-file mappings
+- [port-80-setup.md](docs/en-US/port-80-setup.md) - portless URLs
+- [https-local.md](docs/en-US/https-local.md) - internal HTTPS / local CA plans
+- [tld-hierarchy.md](docs/en-US/tld-hierarchy.md) - root registry, TLD operators, delegation
+- [signatures.md](docs/en-US/signatures.md) - chain of trust, canonical signing
+- [blocked-tlds.md](docs/en-US/blocked-tlds.md) - IANA/reserved/policy blocklists
+- [tld-marketplace-roadmap.md](docs/en-US/tld-marketplace-roadmap.md) - future marketplace phases
+- [troubleshooting.md](docs/en-US/troubleshooting.md)
 
 ## TLDs
 

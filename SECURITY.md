@@ -31,4 +31,4 @@ Especially interesting reports:
 - Nodes are untrusted by design: a report must show a *client* accepting bad
   data, not just a node serving it.
 - Deployment hardening guidance lives in
-  [docs/deployment-vps.md](docs/deployment-vps.md).
+  [docs/en-US/deployment-vps.md](docs/en-US/deployment-vps.md).

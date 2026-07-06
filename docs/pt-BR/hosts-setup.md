@@ -1,6 +1,6 @@
 # Configuração do arquivo hosts (MVP)
 
-> [English version](../hosts-setup.md)
+> [English version](../en-US/hosts-setup.md)
 
 Até o resolvedor DNS local ficar pronto (fase 3), mapeie os domínios Federate
 para o daemon local manualmente.

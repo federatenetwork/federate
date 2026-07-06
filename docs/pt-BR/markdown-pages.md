@@ -1,6 +1,6 @@
 # Páginas em Markdown (`fed-md.js`)
 
-> [English version](../markdown-pages.md)
+> [English version](../en-US/markdown-pages.md)
 
 As páginas oficiais da Federate são escritas como arquivos markdown simples
 e renderizadas no navegador pelo `fed-md.js`: um renderizador sem

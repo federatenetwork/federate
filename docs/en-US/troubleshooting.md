@@ -1,6 +1,6 @@
 # Troubleshooting
 
-> [Versão em português (pt-BR)](pt-BR/troubleshooting.md)
+> [Versão em português (pt-BR)](../pt-BR/troubleshooting.md)
 
 First step, always:
 

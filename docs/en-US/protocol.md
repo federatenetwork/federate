@@ -1,6 +1,6 @@
 # Federate Protocol (MVP)
 
-> [Versão em português (pt-BR)](pt-BR/protocol.md)
+> [Versão em português (pt-BR)](../pt-BR/protocol.md)
 
 ## Root zone
 

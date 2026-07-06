@@ -1,6 +1,6 @@
 # Implantando o Node 1 em um VPS
 
-> [English version](../deployment-vps.md)
+> [English version](../en-US/deployment-vps.md)
 
 Este é o runbook de produção para a primeira implantação real: um VPS de
 qualquer provedor (Hetzner, DigitalOcean, Vultr, OVH, AWS Lightsail, ...)

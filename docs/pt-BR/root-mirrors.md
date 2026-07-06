@@ -1,6 +1,6 @@
 # Espelhos da raiz
 
-> [English version](../root-mirrors.md)
+> [English version](../en-US/root-mirrors.md)
 
 Um espelho da raiz distribui cópias assinadas da zona raiz para que a rede
 não dependa de um único VPS. Espelhos **não podem criar nem modificar

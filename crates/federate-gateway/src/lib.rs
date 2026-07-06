@@ -33,7 +33,7 @@ pub async fn serve(resolver: Arc<Resolver>, addr: SocketAddr) -> federate_core::
                             (do NOT run federated itself with sudo; it root-owns your data dir)\n\
                  - Windows: run the terminal as Administrator\n\
                  - Dev:     federated --gateway-addr 127.0.0.1:8787 (fallback port, not the main flow)\n\
-                 See docs/port-80-setup.md\n"
+                 See docs/en-US/port-80-setup.md\n"
             );
         }
         e

@@ -1,6 +1,6 @@
 # Signatures & Chain of Trust
 
-> [Versão em português (pt-BR)](pt-BR/signatures.md)
+> [Versão em português (pt-BR)](../pt-BR/signatures.md)
 
 ## Keys in one paragraph
 

@@ -1,6 +1,6 @@
 # Planned Local DNS Resolver
 
-> [Versão em português (pt-BR)](pt-BR/dns-resolver.md)
+> [Versão em português (pt-BR)](../pt-BR/dns-resolver.md)
 
 Not implemented in the MVP. The MVP uses hosts-file mappings. This document
 plus the `federate-dns` crate define the boundary so DNS can be added without

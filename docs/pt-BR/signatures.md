@@ -1,6 +1,6 @@
 # Assinaturas e Cadeia de Confiança
 
-> [English version](../signatures.md)
+> [English version](../en-US/signatures.md)
 
 ## Chaves em um parágrafo
 

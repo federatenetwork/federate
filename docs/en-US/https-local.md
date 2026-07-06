@@ -1,6 +1,6 @@
 # Internal HTTPS & Local Federate Root CA (Planned)
 
-> [Versão em português (pt-BR)](pt-BR/https-local.md)
+> [Versão em português (pt-BR)](../pt-BR/https-local.md)
 
 ## MVP position
 

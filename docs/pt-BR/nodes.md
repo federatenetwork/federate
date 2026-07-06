@@ -1,6 +1,6 @@
 # Executando um nó Federate
 
-> [English version](../nodes.md)
+> [English version](../en-US/nodes.md)
 
 Qualquer pessoa pode executar infraestrutura Federate. Um nó é identificado
 por um par de chaves Ed25519 gerado na primeira execução; sua chave pública

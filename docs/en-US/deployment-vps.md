@@ -1,6 +1,6 @@
 # Deploying Node 1 on a VPS
 
-> [Versão em português (pt-BR)](pt-BR/deployment-vps.md)
+> [Versão em português (pt-BR)](../pt-BR/deployment-vps.md)
 
 This is the production runbook for the first real deployment: one VPS from
 any provider (Hetzner, DigitalOcean, Vultr, OVH, AWS Lightsail, ...) running

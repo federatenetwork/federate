@@ -1,6 +1,6 @@
 # Storage and CDN nodes
 
-> [Versão em português (pt-BR)](pt-BR/storage-cdn-nodes.md)
+> [Versão em português (pt-BR)](../pt-BR/storage-cdn-nodes.md)
 
 Storage and CDN nodes hold content-addressed blocks and serve them to
 gateways. They are **never returned to browsers by DNS**; browsers talk to

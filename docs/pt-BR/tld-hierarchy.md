@@ -1,6 +1,6 @@
 # A Hierarquia de TLDs do Federate
 
-> [English version](../tld-hierarchy.md)
+> [English version](../en-US/tld-hierarchy.md)
 
 A Federate Network opera um namespace web paralelo com raiz própria. A camada
 raiz não vende todos os domínios diretamente para sempre; ela controla **quais

@@ -1,6 +1,6 @@
 # TLDs bloqueados
 
-> [English version](../blocked-tlds.md)
+> [English version](../en-US/blocked-tlds.md)
 
 ## `blocked_tlds.txt`
 

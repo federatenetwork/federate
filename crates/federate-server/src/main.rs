@@ -572,6 +572,6 @@ async fn peers_stub() -> Json<serde_json::Value> {
 async fn applications_stub() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "applications": [],
-        "note": "TLD applications/approval arrive in marketplace phase 2; see docs/tld-marketplace-roadmap.md"
+        "note": "TLD applications/approval arrive in marketplace phase 2; see docs/en-US/tld-marketplace-roadmap.md"
     }))
 }

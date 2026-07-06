@@ -1,6 +1,6 @@
 # Resolvedor DNS Local Planejado
 
-> [English version](../dns-resolver.md)
+> [English version](../en-US/dns-resolver.md)
 
 Não implementado no MVP. O MVP usa mapeamentos no arquivo hosts. Este documento
 mais o crate `federate-dns` definem a fronteira para que o DNS possa ser adicionado sem
