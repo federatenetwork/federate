@@ -4,3 +4,6 @@
 .federate-gatewayd/
 .federate-noded/
 .federate-searchd/
+.DS_Store
+*.log
+.env

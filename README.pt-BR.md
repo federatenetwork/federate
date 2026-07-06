@@ -17,7 +17,11 @@ domain → local Federate resolver/daemon → Federate root zone → domain reco
 |---|---|
 | `federate-server` | Node 1 - servidor público de bootstrap/plano de controle (zona raiz, manifestos, blocos) |
 | `federated` | Daemon desktop local - gateway do navegador em `127.0.0.1:80`, API local na `:7777` |
-| `federate` | CLI - status, doctor, resolve, cache, open |
+| `federate` | CLI - status, doctor, resolve, cache, ferramentas de nó/dns/gateway/diretório |
+| `federate-dnsd` | Nó DNS (UDP+TCP 53) - responde TLDs Federate com IPs de gateways saudáveis |
+| `federate-gatewayd` | Nó gateway público - serve sites verificados para navegadores |
+| `federate-noded` | Nó multi-papel - gateway/dns/storage/cdn/busca/espelho-raiz em uma config |
+| `federate-searchd` | Nó de busca - sem anúncios, sem rastreamento, sem treinamento de IA |
 
 ## Início rápido (dev local)
 
@@ -60,3 +64,7 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](docs/pt-BR/hosts-setu
 6. UI de registro, propriedade de domínios, solicitações de TLD, governança.
 7. Instalador desktop, CA raiz local do Federate, HTTPS para domínios internos.
 8. Clientes móveis.
+
+## Licença
+
+[MIT](LICENSE)
