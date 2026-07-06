@@ -82,26 +82,46 @@ answer; it cannot forge an answer that verifies.
 
 ## The native fetch path
 
-Content fetching prefers the native protocol. When a resolver needs a block:
+The whole resolution chain prefers the native protocol, not just blocks.
+
+Root zones and manifests:
+
+1. **local cache** (zone signature / content hash re-verified)
+2. **native providers** (`GetRoot` / `GetManifest`), in configured order
+3. **HTTP compatibility endpoint** of the bootstrap node, last
+
+Content blocks:
 
 1. **local cache** (hash re-verified on read)
 2. **native providers**: directory-announced nodes that declared a
-   `native_port`, best-ranked first, then any configured default native
+   `native_port`, best-ranked first, then the configured default native
    providers
 3. **HTTP providers**: the same nodes' compatibility endpoints
 4. **HTTP origin** (Node 1): compatibility fallback of last resort
 
-A provider is an **untrusted distributor**: a forged answer fails hash
-verification and the fetch moves to the next provider. Failing everything
-native falls back to HTTP; failing everything returns an error, never
-unverified bytes. `federate fetch fed://... --trace` prints each step,
+A provider is an **untrusted distributor**: a forged answer fails signature
+or hash verification and the fetch moves to the next provider. Failing
+everything native falls back to HTTP; failing everything returns an error,
+never unverified bytes. `federate fetch fed://... --trace` prints each step,
 including which transport actually delivered the bytes;
 `federate providers <hash>` lists announced providers and their transports.
 
+## Discovering native peers
+
+`/v1/bootstrap` advertises `native_port` (the answering node's own native
+listener) and `native_nodes` (`host:port` of other healthy native
+listeners). `federated` and `federate fetch` read that answer once and go
+native for everything after; `--native-provider host:port` (daemon) and
+`--provider host:port` (CLI) add providers by hand, and node configs take
+`native_providers = ["host:port"]` under `[network]`. Discovery is the one
+HTTP call a fresh client needs; data never depends on it, and every fetched
+byte is verified regardless of who advertised the provider.
+
 ## Serving it
 
-`federate-noded` listens natively on `native_listen` (default
-`0.0.0.0:4077`) and answers `GetRoot`, `GetBlock`, and `GetStatus` from the
-same verified stores its HTTP routes use. There is one resolution engine and
-one set of stores; native and compatibility surfaces are two doors into the
-same room.
+`federate-server` (Node 1) and `federate-noded` both listen natively
+(default port `4077`) and answer `GetRoot`, `GetManifest`, `GetBlock`, and
+`GetStatus` from the same verified stores their HTTP routes use. The root
+authority is a Federate node first; HTTP is its compatibility door. There is
+one resolution engine and one set of stores; native and compatibility
+surfaces are two doors into the same room.

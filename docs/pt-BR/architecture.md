@@ -42,15 +42,20 @@ Além disso: `federate-core` (tipos/erros/configuração), `federate-identity` (
 ## Fluxo de resolução
 
 ```
-Host: home.fed, Path: /
-  → FederateDomain::parse       (naming: TLD validation)
-  → Resolver.root()             (memory → disk cache → Node 1)
-  → RootZone.lookup("home.fed") (domain record: manifest hash, NOT an IP)
-  → Resolver.manifest(hash)     (cache → Node 1, hash-verified)
-  → Manifest.resolve_path("/")  ("/" → entry file → content hash)
-  → Resolver.block(hash)        (block cache → Node 1, hash-verified)
-  → gateway serves bytes with guessed MIME
+fed://home.fed (ou Host: home.fed + Path: / pelo adaptador HTTP)
+  → FederateUri / FederateDomain  (naming: só sintaxe; existência é decisão da zona)
+  → Resolver.root()               (memória → cache em disco → providers nativos → fallback HTTP)
+  → RootZone.lookup("home.fed")   (registro de domínio: hash do manifest, NÃO um IP)
+  → Resolver.manifest(hash)       (cache → providers nativos → fallback HTTP, hash verificado)
+  → Manifest.resolve_path("/")    ("/" → arquivo de entrada → hash do conteúdo)
+  → Resolver.block(hash)          (cache → providers nativos → providers HTTP → origem, hash verificado)
+  → o consumidor serve os bytes verificados
 ```
+
+Todo fetch de rede prefere o protocolo nativo Federate
+(`federate-protocol` sobre `federate-transport`); os endpoints HTTP são o
+fallback de compatibilidade, nunca o caminho principal. Veja
+[native-protocol.md](native-protocol.md).
 
 Registros de domínio resolvem para **identidades** (hoje, o hash do manifest;
 identidades de dono, serviço e nó são campos reservados para fases

@@ -26,4 +26,6 @@ federate-dns = { workspace = true }
 federate-uri = { workspace = true }
 federate-resolution = { workspace = true }
 federate-bootstrap = { workspace = true }
+federate-protocol = { workspace = true }
+federate-transport = { workspace = true }
 rand = { workspace = true }

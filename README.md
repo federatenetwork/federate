@@ -15,7 +15,7 @@ domain → local Federate resolver/daemon → Federate root zone → domain reco
 
 | Binary | Role |
 |---|---|
-| `federate-server` | Node 1 - public bootstrap/control-plane server (root zone, manifests, blocks) |
+| `federate-server` | Node 1 - root registry node: serves the signed root zone, manifests, and blocks over the native Federate protocol (port 4077) and HTTP compatibility |
 | `federated` | Local desktop daemon - browser gateway on `127.0.0.1:80`, local API on `:7777` |
 | `federate` | CLI - status, doctor, resolve, cache, node/dns/gateway/directory tools |
 | `federate-dnsd` | DNS node (UDP+TCP 53) - answers Federate TLDs with healthy gateway IPs |

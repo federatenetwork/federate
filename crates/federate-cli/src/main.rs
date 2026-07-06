@@ -209,6 +209,13 @@ enum NodeCmd {
         #[arg(long, default_value = "http://127.0.0.1:8080")]
         node: String,
     },
+    /// Handshake a node over the NATIVE Federate protocol and print its
+    /// status (no HTTP involved)
+    Ping {
+        /// Native protocol address, host:port (default port is 4077)
+        #[arg(long, default_value = "127.0.0.1:4077")]
+        addr: String,
+    },
     /// Query a node's /roles endpoint
     Roles {
         #[arg(long, default_value = "http://127.0.0.1:8080")]
@@ -905,6 +912,7 @@ async fn node_cmd(cli: &Ctx, cmd: NodeCmd) {
             Ok(v) => pretty(&v),
             Err(e) => die(&format!("node not reachable at {node} ({e})")),
         },
+        NodeCmd::Ping { addr } => native_ping(&addr).await,
         NodeCmd::Roles { node } => match node_get(&node, "/roles").await {
             Ok(v) => pretty(&v),
             Err(e) => die(&format!("node not reachable at {node} ({e})")),
@@ -942,6 +950,64 @@ async fn node_cmd(cli: &Ctx, cmd: NodeCmd) {
                 )),
             }
         }
+    }
+}
+
+/// Handshake + GetStatus over the native Federate protocol. This command
+/// never touches HTTP: it is the smallest possible native Federate client.
+async fn native_ping(addr: &str) {
+    let data_dir = DaemonConfig::default_data_dir();
+    std::fs::create_dir_all(&data_dir).ok();
+    let identity = NodeIdentity::load_or_create(&data_dir)
+        .unwrap_or_else(|e| die(&format!("cannot load identity: {e}")));
+    let agent = concat!("federate-cli/", env!("CARGO_PKG_VERSION"));
+    let started = std::time::Instant::now();
+    let (mut conn, welcome) = federate_transport::Connection::connect(addr, &identity, agent)
+        .await
+        .unwrap_or_else(|e| die(&format!("[!!] native handshake with {addr} failed: {e}")));
+    let rtt = started.elapsed().as_millis();
+    let federate_protocol::Message::Welcome {
+        version,
+        node_id,
+        agent: peer_agent,
+        capabilities,
+    } = welcome
+    else {
+        die("[!!] peer did not answer the handshake with Welcome");
+    };
+    println!("[ok] native handshake with {addr} in {rtt}ms");
+    println!("     protocol version: {version}");
+    println!("     node id: {node_id}");
+    println!("     agent: {peer_agent}");
+    println!(
+        "     capabilities: {}",
+        capabilities
+            .iter()
+            .map(|c| format!("{c:?}").to_lowercase())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    match conn.request(&federate_protocol::Message::GetStatus).await {
+        Ok(federate_protocol::Message::Status {
+            roles,
+            region,
+            root_version,
+            ..
+        }) => {
+            println!("     roles: {}", roles.join(", "));
+            if !region.is_empty() {
+                println!("     region: {region}");
+            }
+            match root_version {
+                Some(v) => println!("     root zone: v{v} (verified locally by the node)"),
+                None => println!("     root zone: none loaded yet"),
+            }
+        }
+        Ok(federate_protocol::Message::Error { code, detail }) => {
+            println!("     status: not answered ({code:?}: {detail})")
+        }
+        Ok(other) => println!("     status: unexpected answer {other:?}"),
+        Err(e) => println!("     status: request failed ({e})"),
     }
 }
 

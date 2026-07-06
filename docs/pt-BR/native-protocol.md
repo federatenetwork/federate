@@ -85,28 +85,49 @@ resposta que verifique.
 
 ## O caminho nativo de fetch
 
-A busca de conteúdo prefere o protocolo nativo. Quando um resolvedor precisa
-de um bloco:
+A cadeia inteira de resolução prefere o protocolo nativo, não só os blocos.
+
+Zonas raiz e manifests:
+
+1. **cache local** (assinatura da zona / hash do conteúdo re-verificados)
+2. **providers nativos** (`GetRoot` / `GetManifest`), na ordem configurada
+3. **endpoint HTTP de compatibilidade** do nó bootstrap, por último
+
+Blocos de conteúdo:
 
 1. **cache local** (hash re-verificado na leitura)
 2. **providers nativos**: nós anunciados no diretório que declararam
-   `native_port`, melhores primeiro, depois providers nativos padrão
+   `native_port`, melhores primeiro, depois os providers nativos padrão
    configurados
 3. **providers HTTP**: os endpoints de compatibilidade dos mesmos nós
 4. **origem HTTP** (Node 1): fallback de compatibilidade de último recurso
 
 Um provider é um **distribuidor não confiável**: uma resposta forjada falha
-na verificação de hash e o fetch passa ao próximo provider. Falhando tudo
-que é nativo, cai para HTTP; falhando tudo, retorna erro, nunca bytes não
-verificados. `federate fetch fed://... --trace` imprime cada passo,
-incluindo qual transporte de fato entregou os bytes;
+na verificação de assinatura ou hash e o fetch passa ao próximo provider.
+Falhando tudo que é nativo, cai para HTTP; falhando tudo, retorna erro,
+nunca bytes não verificados. `federate fetch fed://... --trace` imprime cada
+passo, incluindo qual transporte de fato entregou os bytes;
 `federate providers <hash>` lista os providers anunciados e seus
 transportes.
 
+## Descobrindo pares nativos
+
+`/v1/bootstrap` anuncia `native_port` (o listener nativo do próprio nó que
+respondeu) e `native_nodes` (`host:porta` de outros listeners nativos
+saudáveis). O `federated` e o `federate fetch` leem essa resposta uma vez e
+seguem nativos para todo o resto; `--native-provider host:porta` (daemon) e
+`--provider host:porta` (CLI) adicionam providers manualmente, e configs de
+nó aceitam `native_providers = ["host:porta"]` em `[network]`. A descoberta
+é a única chamada HTTP que um cliente novo precisa; os dados nunca dependem
+dela, e cada byte buscado é verificado independente de quem anunciou o
+provider.
+
 ## Servindo o protocolo
 
-O `federate-noded` escuta nativamente em `native_listen` (padrão
-`0.0.0.0:4077`) e responde `GetRoot`, `GetBlock` e `GetStatus` a partir dos
-mesmos stores verificados que suas rotas HTTP usam. Existe uma engine de
-resolução e um conjunto de stores; as superfícies nativa e de
-compatibilidade são duas portas para a mesma sala.
+O `federate-server` (Node 1) e o `federate-noded` escutam nativamente
+(porta padrão `4077`) e respondem `GetRoot`, `GetManifest`, `GetBlock` e
+`GetStatus` a partir dos mesmos stores verificados que suas rotas HTTP usam.
+A autoridade raiz é antes de tudo um nó Federate; HTTP é a porta de
+compatibilidade dela. Existe uma engine de resolução e um conjunto de
+stores; as superfícies nativa e de compatibilidade são duas portas para a
+mesma sala.
