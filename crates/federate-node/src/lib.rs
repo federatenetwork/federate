@@ -83,6 +83,11 @@ pub struct NetworkSection {
     /// Pinned Federate Root public key (hex). Strongly recommended.
     #[serde(default)]
     pub root_key: Option<String>,
+    /// Native Federate protocol providers (`host:port`) to prefer for root
+    /// zone, manifest, and block fetching before any HTTP compatibility
+    /// fallback (e.g. the bootstrap node's native listener).
+    #[serde(default)]
+    pub native_providers: Vec<String>,
     /// Upstream DNS for non-Federate names (dns role only).
     #[serde(default = "default_upstream_dns")]
     pub upstream_dns: String,

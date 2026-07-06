@@ -24,3 +24,5 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 federate-directory = { workspace = true }
+federate-protocol = { workspace = true }
+federate-transport = { workspace = true }

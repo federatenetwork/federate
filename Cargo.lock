@@ -492,6 +492,7 @@ name = "federate-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "federate-bootstrap",
  "federate-client",
  "federate-core",
  "federate-directory",
@@ -787,8 +788,10 @@ dependencies = [
  "federate-identity",
  "federate-manifest",
  "federate-naming",
+ "federate-protocol",
  "federate-root",
  "federate-storage",
+ "federate-transport",
  "serde_json",
  "tokio",
  "tracing",
@@ -831,6 +834,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "federate-bootstrap",
  "federate-client",
  "federate-core",
  "federate-gateway",

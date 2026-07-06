@@ -79,9 +79,11 @@ pub struct Resolver {
     /// provider response is hash-verified; providers are never trusted.
     directory: Option<federate_directory::DirectoryClient>,
     region: Option<String>,
-    /// Default native-protocol providers tried when directory data has no
-    /// (or not enough) native providers, e.g. Node 1's own noded.
-    native_providers: Vec<std::net::SocketAddr>,
+    /// Default native-protocol providers (`host:port`), tried for root
+    /// zones and manifests, and for blocks after any directory-discovered
+    /// native providers. Usually the bootstrap node's own native listener
+    /// plus any peers learned from `/v1/bootstrap`.
+    native_providers: Vec<String>,
     /// This client's identity for native protocol handshakes (identity, not
     /// authority: what we fetch is still verified by hash/signature).
     identity: federate_identity::NodeIdentity,
@@ -110,6 +112,9 @@ fn trace(t: Option<&Trace>, event: impl Into<String>) {
 fn short(hash: &str) -> &str {
     hash.get(..12).unwrap_or(hash)
 }
+
+/// Agent string sent in native-protocol handshakes (diagnostic only).
+const AGENT: &str = concat!("federate-resolution/", env!("CARGO_PKG_VERSION"));
 
 impl Resolver {
     /// `configured_root_key`: explicit trust anchor (recommended for
@@ -156,10 +161,11 @@ impl Resolver {
         self
     }
 
-    /// Default native-protocol providers, tried in the native pass after any
-    /// directory-discovered native providers (e.g. Node 1's own noded for
-    /// official content).
-    pub fn with_native_providers(mut self, providers: Vec<std::net::SocketAddr>) -> Self {
+    /// Default native-protocol providers (`host:port`). Used for the native
+    /// pass of every fetch: root zones and manifests are tried here before
+    /// the HTTP compatibility endpoint; blocks try these after any
+    /// directory-discovered native providers.
+    pub fn with_native_providers(mut self, providers: Vec<String>) -> Self {
         self.native_providers = providers;
         self
     }
@@ -207,13 +213,61 @@ impl Resolver {
         Some(Arc::new(cached))
     }
 
-    /// Fetch the root zone from Node 1, verify its signature chain, fall back
-    /// to the (previously verified) disk cache when the network is down.
+    /// Fetch the root zone from the network with the native protocol first:
+    /// each configured native provider is asked `GetRoot`; only when none
+    /// answers does the fetch fall back to the bootstrap node's HTTP
+    /// compatibility endpoint. The transport never matters for trust: the
+    /// caller verifies the zone signature either way.
+    async fn fetch_root_network(&self) -> Result<RootZone> {
+        for addr in &self.native_providers {
+            match self.fetch_root_native(addr).await {
+                Ok(zone) => {
+                    tracing::debug!("root zone fetched over the native protocol from {addr}");
+                    return Ok(zone);
+                }
+                Err(e) => {
+                    tracing::debug!("native root fetch from {addr} failed: {e}; trying next")
+                }
+            }
+        }
+        self.client.fetch_root().await
+    }
+
+    /// One native-protocol root fetch: connect, handshake, GetRoot. The
+    /// returned zone is structurally validated only; signature verification
+    /// (and rollback protection) happens in the caller, same as HTTP.
+    async fn fetch_root_native(&self, addr: &str) -> Result<RootZone> {
+        let (mut conn, _welcome) =
+            federate_transport::Connection::connect(addr, &self.identity, AGENT).await?;
+        match conn.request(&federate_protocol::Message::GetRoot).await? {
+            federate_protocol::Message::Root { zone_json } => {
+                if zone_json.len() as u64 > federate_client::MAX_ROOT_BYTES {
+                    return Err(FederateError::Network(format!(
+                        "native root zone exceeds {} bytes",
+                        federate_client::MAX_ROOT_BYTES
+                    )));
+                }
+                let zone: RootZone = serde_json::from_slice(&zone_json)?;
+                zone.validate()?;
+                Ok(zone)
+            }
+            federate_protocol::Message::Error { code, detail } => Err(FederateError::Network(
+                format!("native provider answered {code:?}: {detail}"),
+            )),
+            other => Err(FederateError::Network(format!(
+                "native provider answered unexpectedly: {other:?}"
+            ))),
+        }
+    }
+
+    /// Fetch the root zone from the network (native first, HTTP fallback),
+    /// verify its signature chain, fall back to the (previously verified)
+    /// disk cache when the network is down.
     /// Unverifiable zones are NEVER stored or used. A correctly signed but
     /// OLDER zone than one we already verified is also rejected (rollback /
-    /// replay protection): Node 1 distributes signed data, it cannot rewind it.
+    /// replay protection): a node distributes signed data, it cannot rewind it.
     pub async fn refresh_root(&self) -> Result<Arc<RootZone>> {
-        match self.client.fetch_root().await {
+        match self.fetch_root_network().await {
             Ok(zone) => {
                 if let Err(e) = self.verify_zone(&zone).await {
                     // Server sent an unverifiable zone (tampering or key
@@ -271,7 +325,12 @@ impl Resolver {
         self.refresh_root().await
     }
 
-    async fn manifest(&self, hash: &str) -> Result<Manifest> {
+    /// Raw, content-addressed manifest bytes: local cache, then native
+    /// providers, then the HTTP compatibility endpoint. Every source is
+    /// untrusted; bytes count only after they hash to `hash`. The exact bytes
+    /// are cached verbatim (re-serializing would change the hash) and served
+    /// verbatim, so nodes can relay manifests they cannot even parse.
+    pub async fn manifest_bytes(&self, hash: &str) -> Result<Vec<u8>> {
         // Reject any hash that isn't a valid content address before it can be
         // used to build a cache path (blocks traversal like `../../`).
         if !federate_storage::is_valid_hash(hash) {
@@ -282,24 +341,68 @@ impl Resolver {
             // The manifest is content-addressed: cached bytes must hash to
             // `hash`, exactly as fetched. A mismatch means tampering/corruption.
             if federate_storage::verify(&bytes, hash).is_ok() {
-                if let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) {
-                    if m.validate().is_ok() {
-                        return Ok(m);
-                    }
-                }
+                return Ok(bytes);
             }
             std::fs::remove_file(&cached).ok();
         }
-        // Fetch raw, hash-verified bytes and cache them verbatim so the next
-        // read is a real cache hit (re-serializing would change the hash).
-        let bytes = self.client.fetch_manifest_bytes(hash).await?;
-        let manifest: Manifest = serde_json::from_slice(&bytes)?;
-        manifest.validate()?;
+        let bytes = self.fetch_manifest_network(hash).await?;
         // Write-then-rename: a crash mid-write must not leave a truncated
         // manifest at the content-addressed cache path.
         let tmp = self.manifest_dir.join(format!("{hash}.tmp"));
         std::fs::write(&tmp, &bytes)?;
         std::fs::rename(&tmp, &cached)?;
+        Ok(bytes)
+    }
+
+    /// Manifest fetch from the network: native providers first, HTTP last.
+    async fn fetch_manifest_network(&self, hash: &str) -> Result<Vec<u8>> {
+        for addr in &self.native_providers {
+            match self.fetch_manifest_native(addr, hash).await {
+                Ok(bytes) => {
+                    tracing::debug!("manifest {hash} fetched over the native protocol from {addr}");
+                    return Ok(bytes);
+                }
+                Err(e) => {
+                    tracing::debug!("native manifest fetch from {addr} failed: {e}; trying next")
+                }
+            }
+        }
+        self.client.fetch_manifest_bytes(hash).await
+    }
+
+    /// One native-protocol manifest fetch, hash-verified before returning.
+    async fn fetch_manifest_native(&self, addr: &str, hash: &str) -> Result<Vec<u8>> {
+        let (mut conn, _welcome) =
+            federate_transport::Connection::connect(addr, &self.identity, AGENT).await?;
+        match conn
+            .request(&federate_protocol::Message::GetManifest {
+                hash: hash.to_string(),
+            })
+            .await?
+        {
+            federate_protocol::Message::Manifest { bytes, .. } => {
+                if bytes.len() as u64 > federate_client::MAX_MANIFEST_BYTES {
+                    return Err(FederateError::Network(format!(
+                        "native manifest exceeds {} bytes",
+                        federate_client::MAX_MANIFEST_BYTES
+                    )));
+                }
+                federate_storage::verify(&bytes, hash)?;
+                Ok(bytes)
+            }
+            federate_protocol::Message::Error { code, detail } => Err(FederateError::Network(
+                format!("native provider answered {code:?}: {detail}"),
+            )),
+            other => Err(FederateError::Network(format!(
+                "native provider answered unexpectedly: {other:?}"
+            ))),
+        }
+    }
+
+    async fn manifest(&self, hash: &str) -> Result<Manifest> {
+        let bytes = self.manifest_bytes(hash).await?;
+        let manifest: Manifest = serde_json::from_slice(&bytes)?;
+        manifest.validate()?;
         Ok(manifest)
     }
 
@@ -346,17 +449,20 @@ impl Resolver {
 
         // 2. Native pass: providers that speak the Federate protocol, best
         // ranked first, then the configured default native providers.
-        let mut native: Vec<(String, std::net::SocketAddr)> = ranked
+        let mut native: Vec<(String, String)> = ranked
             .iter()
-            .filter_map(|p| p.native_addr().map(|a| (p.registration.node_id.clone(), a)))
+            .filter_map(|p| {
+                p.native_addr()
+                    .map(|a| (p.registration.node_id.clone(), a.to_string()))
+            })
             .collect();
         for addr in &self.native_providers {
             if !native.iter().any(|(_, a)| a == addr) {
-                native.push(("default-provider".into(), *addr));
+                native.push(("default-provider".into(), addr.clone()));
             }
         }
         for (node_id, addr) in &native {
-            match self.fetch_block_native(*addr, hash).await {
+            match self.fetch_block_native(addr, hash).await {
                 Ok(bytes) => {
                     self.blocks.put(hash, &bytes)?;
                     trace(
@@ -433,13 +539,12 @@ impl Resolver {
     /// One native-protocol block fetch: connect, handshake, GetBlock, verify
     /// the bytes against the content address. The provider is untrusted; a
     /// wrong-bytes answer fails verification here and the caller moves on.
-    async fn fetch_block_native(&self, addr: std::net::SocketAddr, hash: &str) -> Result<Vec<u8>> {
+    async fn fetch_block_native(&self, addr: &str, hash: &str) -> Result<Vec<u8>> {
         if !federate_storage::is_valid_hash(hash) {
             return Err(FederateError::BlockNotFound(hash.to_string()));
         }
-        let agent = concat!("federate-resolution/", env!("CARGO_PKG_VERSION"));
         let (mut conn, _welcome) =
-            federate_transport::Connection::connect(addr, &self.identity, agent).await?;
+            federate_transport::Connection::connect(addr, &self.identity, AGENT).await?;
         match conn
             .request(&federate_protocol::Message::GetBlock {
                 hash: hash.to_string(),
@@ -912,6 +1017,59 @@ mod tests {
         }
     }
 
+    /// Test-only native node serving the whole chain: signed root zone,
+    /// content-addressed manifests, content blocks. What Node 1 (or any
+    /// full node) looks like over the native protocol.
+    struct FullService {
+        zone: RootZone,
+        manifests: std::collections::HashMap<String, Vec<u8>>,
+        blocks: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    #[federate_transport::async_trait]
+    impl federate_transport::NodeService for FullService {
+        fn node_id(&self) -> String {
+            "aa".repeat(32)
+        }
+        fn capabilities(&self) -> Vec<federate_protocol::Capability> {
+            vec![
+                federate_protocol::Capability::Root,
+                federate_protocol::Capability::Manifests,
+                federate_protocol::Capability::Blocks,
+            ]
+        }
+        async fn handle(&self, req: federate_protocol::Message) -> federate_protocol::Message {
+            use federate_protocol::{ErrorCode, Message};
+            let not_found = |detail: &str| Message::Error {
+                code: ErrorCode::NotFound,
+                detail: detail.into(),
+            };
+            match req {
+                Message::GetRoot => Message::Root {
+                    zone_json: serde_json::to_vec(&self.zone).unwrap(),
+                },
+                Message::GetManifest { hash } => match self.manifests.get(&hash) {
+                    Some(bytes) => Message::Manifest {
+                        hash,
+                        bytes: bytes.clone(),
+                    },
+                    None => not_found("no such manifest"),
+                },
+                Message::GetBlock { hash } => match self.blocks.get(&hash) {
+                    Some(bytes) => Message::Block {
+                        hash,
+                        bytes: bytes.clone(),
+                    },
+                    None => not_found("no such block"),
+                },
+                _ => Message::Error {
+                    code: ErrorCode::Unsupported,
+                    detail: "root/manifests/blocks only".into(),
+                },
+            }
+        }
+    }
+
     /// A hostile native node: answers every GetBlock with wrong bytes.
     struct LiarService;
 
@@ -1049,7 +1207,7 @@ mod tests {
 
         let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
             .unwrap()
-            .with_native_providers(vec![provider]);
+            .with_native_providers(vec![provider.to_string()]);
 
         for fqdn in fqdns {
             let uri = federate_uri::FederateUri::parse(&format!("fed://{fqdn}")).unwrap();
@@ -1070,6 +1228,69 @@ mod tests {
         }
     }
 
+    /// The full resolution chain with NO HTTP anywhere: root zone, manifest,
+    /// and block all arrive over the native Federate protocol from a peer.
+    /// The bootstrap HTTP endpoint is unreachable and nothing is cached, so
+    /// success proves the network can run natively end to end.
+    #[tokio::test]
+    async fn entire_chain_resolves_over_native_protocol_only() {
+        let dir = tmp("native-e2e");
+        let keys = keys(&dir);
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+
+        let block = b"<html>served with zero HTTP</html>".to_vec();
+        let block_hash = federate_storage::hash_bytes(&block);
+        let mut manifest = Manifest {
+            domain: "puro.fed".into(),
+            version: 1,
+            entry: "index.html".into(),
+            files: BTreeMap::from([("index.html".to_string(), block_hash.clone())]),
+            owner_public_key: owner.node_id(),
+            created_at: "t".into(),
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        manifest.signature = Some(owner.sign(&manifest.signable_bytes().unwrap()));
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
+
+        let mut record = signed_domain(&keys, "puro.fed", None);
+        record.owner_public_key = owner.node_id();
+        record.manifest_hash = manifest_hash.clone();
+        record.signature = Some(keys.operator.sign(&record.signable_bytes().unwrap()));
+        let zone = signed_zone(&keys, 1, BTreeMap::from([("puro.fed".to_string(), record)]));
+
+        let provider = spawn_native(FullService {
+            zone,
+            manifests: std::collections::HashMap::from([(manifest_hash, manifest_bytes)]),
+            blocks: std::collections::HashMap::from([(block_hash, block.clone())]),
+        })
+        .await;
+
+        // Fresh data dir: no cached zone, no cached manifest, no cached block.
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let resolver = Resolver::new(
+            NodeClient::new("http://127.0.0.1:1"),
+            &data_dir,
+            Some(keys.root.node_id()),
+        )
+        .unwrap()
+        .with_native_providers(vec![provider.to_string()]);
+
+        let zone = resolver.refresh_root().await.unwrap();
+        assert_eq!(zone.root_version, 1, "root zone arrived natively");
+
+        let uri = federate_uri::FederateUri::parse("fed://puro.fed").unwrap();
+        let t = Trace::default();
+        match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+            Resolved::Content { bytes, .. } => assert_eq!(bytes, block),
+            other => panic!("expected content, got {other:?}"),
+        }
+        let log = t.events().join("\n");
+        assert!(log.contains("NATIVE protocol"), "block natively:\n{log}");
+    }
+
     /// A native provider serving forged bytes is rejected by hash
     /// verification; the next provider answers correctly.
     #[tokio::test]
@@ -1087,7 +1308,7 @@ mod tests {
 
         let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
             .unwrap()
-            .with_native_providers(vec![liar, honest]);
+            .with_native_providers(vec![liar.to_string(), honest.to_string()]);
 
         let uri = federate_uri::FederateUri::parse("fed://site.mosca").unwrap();
         let t = Trace::default();
@@ -1142,7 +1363,7 @@ mod tests {
 
         let resolver = Resolver::new(NodeClient::new(&origin), &data_dir, None)
             .unwrap()
-            .with_native_providers(vec![dead]);
+            .with_native_providers(vec![dead.to_string()]);
 
         let uri = federate_uri::FederateUri::parse("fed://fed.busca").unwrap();
         let t = Trace::default();
@@ -1176,7 +1397,7 @@ mod tests {
         };
         let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
             .unwrap()
-            .with_native_providers(vec![dead]);
+            .with_native_providers(vec![dead.to_string()]);
         // Pre-seed the verified local cache.
         resolver.block_store().put(&hash, &bytes).unwrap();
 

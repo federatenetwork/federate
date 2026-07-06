@@ -83,7 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &data_dir,
             config.network.root_key.clone(),
         )?
-        .with_directory(directory.clone(), Some(config.node.region.clone())),
+        .with_directory(directory.clone(), Some(config.node.region.clone()))
+        .with_native_providers(config.network.native_providers.clone()),
     );
     match resolver.refresh_root().await {
         Ok(zone) => tracing::info!("verified root zone v{}", zone.root_version),
@@ -243,7 +244,10 @@ impl federate_transport::NodeService for NativeService {
     }
 
     fn capabilities(&self) -> Vec<federate_protocol::Capability> {
-        let mut caps = vec![federate_protocol::Capability::Root];
+        let mut caps = vec![
+            federate_protocol::Capability::Root,
+            federate_protocol::Capability::Manifests,
+        ];
         if self.cache.is_some() {
             caps.push(federate_protocol::Capability::Blocks);
         }
@@ -265,6 +269,18 @@ impl federate_transport::NodeService for NativeService {
                     &format!("no verified root zone: {e}"),
                 ),
             },
+            Message::GetManifest { hash } => {
+                if !federate_storage::is_valid_hash(&hash) {
+                    return err(ErrorCode::BadRequest, "not a valid content address");
+                }
+                // Content-addressed relay: local cache first, then the
+                // network (native providers, HTTP fallback). The bytes are
+                // hash-verified before they leave and again by the receiver.
+                match self.resolver.manifest_bytes(&hash).await {
+                    Ok(bytes) => Message::Manifest { hash, bytes },
+                    Err(_) => err(ErrorCode::NotFound, "manifest not available here"),
+                }
+            }
             Message::GetBlock { hash } => {
                 if !federate_storage::is_valid_hash(&hash) {
                     return err(ErrorCode::BadRequest, "not a valid content address");
@@ -299,7 +315,7 @@ impl federate_transport::NodeService for NativeService {
             },
             _ => err(
                 ErrorCode::Unsupported,
-                "this node answers GetRoot, GetBlock, and GetStatus",
+                "this node answers GetRoot, GetManifest, GetBlock, and GetStatus",
             ),
         }
     }

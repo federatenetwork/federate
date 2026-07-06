@@ -35,6 +35,12 @@ struct Args {
     /// in the data dir.
     #[arg(long)]
     root_key: Option<String>,
+    /// Native Federate protocol provider, host:port (repeatable). Root
+    /// zones, manifests, and blocks are fetched from these over the native
+    /// protocol before any HTTP compatibility fallback. Providers advertised
+    /// by the bootstrap node are added automatically.
+    #[arg(long = "native-provider")]
+    native_providers: Vec<String>,
 }
 
 struct AppState {
@@ -63,8 +69,35 @@ async fn main() -> anyhow_lite::Result {
     let identity = NodeIdentity::load_or_create(&config.data_dir)?;
     tracing::info!("node identity: {}", identity.node_id());
 
+    // Native peer discovery: one HTTP call to /v1/bootstrap tells us where
+    // the native-protocol listeners are; everything after that prefers the
+    // native protocol. Discovery failing only means HTTP compatibility until
+    // the next start.
+    let mut native_providers = args.native_providers.clone();
+    match federate_bootstrap::BootstrapClient::new()
+        .fetch(&config.bootstrap_url)
+        .await
+    {
+        Ok(info) => {
+            for provider in info.native_providers(&config.bootstrap_url) {
+                if !native_providers.contains(&provider) {
+                    native_providers.push(provider);
+                }
+            }
+        }
+        Err(e) => tracing::debug!("bootstrap discovery failed: {e} (native providers: flags only)"),
+    }
+    if native_providers.is_empty() {
+        tracing::info!("no native providers known; using HTTP compatibility fetching");
+    } else {
+        tracing::info!("native providers: {}", native_providers.join(", "));
+    }
+
     let client = NodeClient::new(&config.bootstrap_url);
-    let resolver = Arc::new(Resolver::new(client, &config.data_dir, args.root_key)?);
+    let resolver = Arc::new(
+        Resolver::new(client, &config.data_dir, args.root_key)?
+            .with_native_providers(native_providers),
+    );
 
     match resolver.refresh_root().await {
         Ok(zone) => tracing::info!(

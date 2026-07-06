@@ -13,6 +13,7 @@ federate-core = { workspace = true }
 federate-identity = { workspace = true }
 federate-client = { workspace = true }
 federate-resolution = { workspace = true }
+federate-bootstrap = { workspace = true }
 federate-gateway = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

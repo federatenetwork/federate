@@ -83,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bootstrap: args.bootstrap.clone(),
                 directory: Some(directory_url.clone()),
                 root_key: args.root_key.clone(),
+                native_providers: Vec::new(),
                 upstream_dns: federate_dns_default(),
             },
             capacity: NodeCapacity::default(),

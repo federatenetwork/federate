@@ -47,9 +47,10 @@ enum Cmd {
         /// Print each resolution/fetch step (providers, transport, checks)
         #[arg(long)]
         trace: bool,
-        /// Native protocol provider to prefer, ip:port (repeatable)
+        /// Native protocol provider to prefer, host:port (repeatable).
+        /// Providers advertised by the bootstrap node are added automatically.
         #[arg(long = "provider")]
-        providers: Vec<std::net::SocketAddr>,
+        providers: Vec<String>,
     },
     /// List known providers for a content block hash
     Providers { hash: String },
@@ -353,11 +354,23 @@ async fn fetch_cmd(
     output: Option<std::path::PathBuf>,
     root_key: Option<String>,
     trace_on: bool,
-    native_providers: Vec<std::net::SocketAddr>,
+    mut native_providers: Vec<String>,
 ) {
     use federate_resolution::{Resolved, Resolver, Trace};
     let data_dir = DaemonConfig::default_data_dir();
     std::fs::create_dir_all(&data_dir).ok();
+    // Discover native-protocol peers from the bootstrap answer so the fetch
+    // prefers the native transport even with no --provider flags.
+    if let Ok(info) = federate_bootstrap::BootstrapClient::new()
+        .fetch(&cli.bootstrap)
+        .await
+    {
+        for provider in info.native_providers(&cli.bootstrap) {
+            if !native_providers.contains(&provider) {
+                native_providers.push(provider);
+            }
+        }
+    }
     let resolver = Resolver::new(
         federate_client::NodeClient::new(&cli.bootstrap),
         &data_dir,

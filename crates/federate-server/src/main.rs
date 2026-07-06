@@ -50,6 +50,12 @@ struct Args {
     /// defaults when missing).
     #[arg(long, default_value = "data/blocked")]
     blocked_dir: PathBuf,
+    /// Native Federate protocol listen address (framed TCP, port 0xFED).
+    /// Node 1 is a Federate node first: it serves the signed root zone,
+    /// manifests, and blocks over the native protocol; the HTTP routes are
+    /// the compatibility surface.
+    #[arg(long, default_value = "0.0.0.0:4077")]
+    native_listen: SocketAddr,
 }
 
 struct Store {
@@ -61,8 +67,73 @@ struct Store {
     blocks: HashMap<String, Vec<u8>>,
     node_id: String,
     started_at: String,
+    /// TCP port of this node's native Federate protocol listener,
+    /// advertised via `/v1/bootstrap` so clients can go native immediately.
+    native_port: u16,
     /// The official node directory (registered nodes, roles, health).
     directory: Arc<federate_directory::Directory>,
+}
+
+/// Native-protocol face of Node 1: the same signed root zone, manifests, and
+/// blocks the HTTP compatibility routes serve, over the Federate protocol.
+/// Trust still never comes from this node; receivers verify everything.
+struct NativeService(Arc<Store>);
+
+#[federate_transport::async_trait]
+impl federate_transport::NodeService for NativeService {
+    fn node_id(&self) -> String {
+        self.0.node_id.clone()
+    }
+
+    fn capabilities(&self) -> Vec<federate_protocol::Capability> {
+        vec![
+            federate_protocol::Capability::Root,
+            federate_protocol::Capability::Manifests,
+            federate_protocol::Capability::Blocks,
+        ]
+    }
+
+    async fn handle(&self, request: federate_protocol::Message) -> federate_protocol::Message {
+        use federate_protocol::{ErrorCode, Message};
+        let not_found = |detail: &str| Message::Error {
+            code: ErrorCode::NotFound,
+            detail: detail.to_string(),
+        };
+        match request {
+            Message::GetRoot => match serde_json::to_vec(&self.0.root) {
+                Ok(zone_json) => Message::Root { zone_json },
+                Err(e) => Message::Error {
+                    code: ErrorCode::Unavailable,
+                    detail: e.to_string(),
+                },
+            },
+            Message::GetManifest { hash } => match self.0.manifests.get(&hash) {
+                Some(bytes) => Message::Manifest {
+                    hash,
+                    bytes: bytes.clone(),
+                },
+                None => not_found("no such manifest"),
+            },
+            Message::GetBlock { hash } => match self.0.blocks.get(&hash) {
+                Some(bytes) => Message::Block {
+                    hash,
+                    bytes: bytes.clone(),
+                },
+                None => not_found("no such block"),
+            },
+            Message::GetStatus => Message::Status {
+                node_id: self.0.node_id.clone(),
+                roles: vec!["root-authority".into(), "origin".into()],
+                region: String::new(),
+                agent: concat!("federate-server/", env!("CARGO_PKG_VERSION")).into(),
+                root_version: Some(self.0.root.root_version),
+            },
+            _ => Message::Error {
+                code: ErrorCode::Unsupported,
+                detail: "this node answers GetRoot, GetManifest, GetBlock, and GetStatus".into(),
+            },
+        }
+    }
 }
 
 /// Turn a site dir name like "home-fed" into a domain "home.fed"
@@ -289,6 +360,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         blocks,
         node_id: node_identity.node_id(),
         started_at: now,
+        native_port: args.native_listen.port(),
         directory,
     })
 }
@@ -342,6 +414,26 @@ async fn main() -> anyhow::Result<()> {
         std::time::Duration::from_secs(15),
     ));
 
+    // Native Federate protocol listener. This is the primary surface of the
+    // network; a bind failure only degrades Node 1 to compatibility-only.
+    match tokio::net::TcpListener::bind(args.native_listen).await {
+        Ok(listener) => {
+            tracing::info!(
+                "federate native protocol on fed-tcp://{}",
+                args.native_listen
+            );
+            tokio::spawn(federate_transport::serve(
+                listener,
+                Arc::new(NativeService(store.clone())),
+                concat!("federate-server/", env!("CARGO_PKG_VERSION")).into(),
+            ));
+        }
+        Err(e) => tracing::warn!(
+            "cannot bind native protocol listener {}: {e}; serving HTTP compatibility only",
+            args.native_listen
+        ),
+    }
+
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     tracing::info!(
         "federate-server (Node 1) listening on http://{}",
@@ -366,6 +458,7 @@ async fn status(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "node": "node-1",
         "node_id": s.node_id,
+        "native_port": s.native_port,
         "started_at": s.started_at,
         "root_version": s.root.root_version,
         "root_public_key": s.root.root_public_key,
@@ -407,11 +500,28 @@ async fn bootstrap(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
         .iter()
         .map(endpoint)
         .collect();
+    // Every healthy node that declared a native listener, as host:port. New
+    // clients use these (plus this node's own native_port) to speak the
+    // Federate protocol immediately instead of staying on HTTP.
+    let native_nodes: Vec<String> = {
+        let mut addrs: Vec<String> = s
+            .directory
+            .list(None, true)
+            .await
+            .iter()
+            .filter_map(|n| n.native_addr().map(|a| a.to_string()))
+            .collect();
+        addrs.sort();
+        addrs.dedup();
+        addrs
+    };
     Json(serde_json::json!({
         "network": s.root.network,
         "root_url": "/v1/root",
         "root_version": s.root.root_version,
         "root_public_key": s.root.root_public_key,
+        "native_port": s.native_port,
+        "native_nodes": native_nodes,
         "root_mirrors": mirrors,
         "dns_nodes": dns,
         "gateway_nodes": gateways,
