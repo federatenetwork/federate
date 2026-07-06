@@ -500,8 +500,10 @@ dependencies = [
  "federate-manifest",
  "federate-naming",
  "federate-node",
+ "federate-resolution",
  "federate-root",
  "federate-storage",
+ "federate-uri",
  "rand 0.8.6",
  "reqwest",
  "serde_json",
@@ -583,8 +585,13 @@ name = "federate-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "federate-client",
  "federate-core",
+ "federate-identity",
+ "federate-naming",
  "federate-resolution",
+ "federate-root",
+ "federate-uri",
  "tokio",
  "tracing",
 ]
@@ -667,12 +674,27 @@ dependencies = [
  "federate-dns",
  "federate-gateway",
  "federate-node",
+ "federate-protocol",
  "federate-resolution",
  "federate-search",
+ "federate-storage",
+ "federate-transport",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "federate-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "federate-core",
+ "federate-identity",
+ "hex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -705,6 +727,7 @@ dependencies = [
  "federate-naming",
  "federate-root",
  "federate-storage",
+ "federate-uri",
  "mime_guess",
  "serde_json",
  "tokio",
@@ -777,6 +800,27 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "federate-core",
+]
+
+[[package]]
+name = "federate-transport"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "federate-core",
+ "federate-identity",
+ "federate-protocol",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "federate-uri"
+version = "0.1.0"
+dependencies = [
+ "federate-core",
+ "federate-naming",
+ "serde",
 ]
 
 [[package]]

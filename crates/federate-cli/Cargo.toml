@@ -23,4 +23,6 @@ serde_json = { workspace = true }
 federate-directory = { workspace = true }
 federate-node = { workspace = true }
 federate-dns = { workspace = true }
+federate-uri = { workspace = true }
+federate-resolution = { workspace = true }
 rand = { workspace = true }

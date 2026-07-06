@@ -1,7 +1,12 @@
-//! federate-gateway: HTTP gateway for normal browsers.
+//! federate-gateway: the HTTP *compatibility adapter* for normal browsers.
 //!
-//! Reads the Host header, delegates to federate-resolution (never resolves
-//! domains itself), serves verified content blocks back as HTTP.
+//! Federate's native addressing is `fed://domain/path` and its native
+//! surface is the Federate protocol; a plain browser can speak neither. This
+//! gateway is the bridge: it translates `Host: joao.pagina` + `/about` into
+//! `fed://joao.pagina/about` (via `federate-uri`) and hands that to the SAME
+//! resolution engine every native consumer uses. It never resolves names on
+//! its own and cannot bypass signature/hash verification: there is no other
+//! code path.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -73,7 +78,14 @@ async fn handle(
         return (StatusCode::URI_TOO_LONG, "uri too long\n").into_response();
     }
 
-    match resolver.resolve(host, path).await {
+    // Compatibility translation: HTTP request -> native Federate URI. From
+    // here on this request is indistinguishable from a native fed:// fetch.
+    let fed_uri = match federate_uri::FederateUri::from_http(host, path) {
+        Ok(u) => u,
+        Err(_) => return (StatusCode::NOT_FOUND, "404 not found\n").into_response(),
+    };
+
+    match resolver.resolve_uri(&fed_uri).await {
         Ok(Resolved::Content {
             bytes, mime, hash, ..
         }) => {
@@ -239,7 +251,114 @@ h1{{font-weight:normal}}code{{background:var(--surface);padding:.15em .4em;borde
 
 #[cfg(test)]
 mod tests {
-    use super::{esc, etag_matches};
+    use super::{esc, etag_matches, handle};
+    use axum::extract::State;
+    use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+    use federate_identity::NodeIdentity;
+    use federate_resolution::Resolver;
+    use federate_root::{RootCache, RootZone, TldRecord, SIGNATURE_ALGORITHM};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    /// Offline resolver over a signed multi-TLD zone (no domain records:
+    /// the record layer answers 404, which proves the full generic chain
+    /// root -> TLD -> domain lookup ran for every TLD).
+    fn offline_resolver(tlds: &[&str]) -> Arc<Resolver> {
+        let dir = std::env::temp_dir().join(format!(
+            "fed-gw-adapter-{}-{}",
+            std::process::id(),
+            tlds.len()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = NodeIdentity::load_or_create(&dir.join("root")).unwrap();
+        let mut zone_tlds = BTreeMap::new();
+        for tld in tlds {
+            let mut rec = TldRecord {
+                tld: tld.to_string(),
+                status: federate_naming::TldStatus::Official,
+                mode: federate_naming::TldMode::Official,
+                owner_public_key: root.node_id(),
+                operator_public_key: root.node_id(),
+                operator_name: "test".into(),
+                registry_type: federate_naming::RegistryType::RootManaged,
+                registry_endpoint: None,
+                registry_manifest_hash: None,
+                policy_hash: None,
+                pricing: None,
+                created_at: "t".into(),
+                updated_at: "t".into(),
+                expires_at: None,
+                notes: None,
+                signature_algorithm: SIGNATURE_ALGORITHM.into(),
+                signature: None,
+            };
+            rec.signature = Some(root.sign(&rec.signable_bytes().unwrap()));
+            zone_tlds.insert(tld.to_string(), rec);
+        }
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 1,
+            generated_at: "t".into(),
+            root_public_key: root.node_id(),
+            tlds: zone_tlds,
+            domains: BTreeMap::new(),
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(root.sign(&zone.signable_bytes().unwrap()));
+        RootCache::new(&dir).store(&zone).unwrap();
+        Arc::new(
+            Resolver::new(
+                federate_client::NodeClient::new("http://127.0.0.1:1"),
+                &dir,
+                Some(root.node_id()),
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn get(resolver: Arc<Resolver>, host: &str, path: &str) -> StatusCode {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        let uri: Uri = path.parse().unwrap();
+        handle(State(resolver), Method::GET, headers, uri)
+            .await
+            .status()
+    }
+
+    /// HTTP requests for ANY official TLD go through the same native path:
+    /// each answers 404 domain-not-found (the generic chain ran), never a
+    /// TLD error, never a special case for one hardcoded domain.
+    #[tokio::test]
+    async fn http_adapter_serves_every_tld_through_native_path() {
+        let tlds = ["fed", "pagina", "rosa", "cara", "mosca", "busca"];
+        let resolver = offline_resolver(&tlds);
+        for tld in tlds {
+            let status = get(resolver.clone(), &format!("site.{tld}"), "/").await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "site.{tld}: expected domain-not-found through the generic path"
+            );
+        }
+        // Unknown TLD: structured 404 via the same engine.
+        assert_eq!(
+            get(resolver.clone(), "x.nowhere", "/").await,
+            StatusCode::NOT_FOUND
+        );
+        // Non-Federate host: rejected at URI translation, no resolution.
+        assert_eq!(
+            get(resolver.clone(), "not_a_host!!", "/").await,
+            StatusCode::NOT_FOUND
+        );
+        // Write methods have no place on a content gateway.
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("site.fed"));
+        let resp = handle(State(resolver), Method::POST, headers, "/".parse().unwrap()).await;
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
 
     #[test]
     fn etag_matching_rules() {

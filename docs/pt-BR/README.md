@@ -35,6 +35,13 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](hosts-setup.md)) e en
 
 ## Documentação
 
+- [vision.md](vision.md) - a Federate como internet alternativa em overlay
+- [overlay-network.md](overlay-network.md) - o mapa de camadas: o que é da Federate e o que ela reaproveita
+- [federate-uri.md](federate-uri.md) - o formato nativo de endereçamento `fed://`
+- [native-protocol.md](native-protocol.md) - o protocolo nativo de nós/clientes e o transporte
+- [browser-compatibility.md](browser-compatibility.md) - pontes DNS/HTTP para navegadores normais
+- [future-federate-browser.md](future-federate-browser.md) - a fronteira do cliente nativo
+- [non-html-runtime-roadmap.md](non-html-runtime-roadmap.md) - documentos, pacotes e apps além do HTML
 - [decentralization.md](decentralization.md) - o que é ou não descentralizado, cadeia de confiança
 - [nodes.md](nodes.md) - rodando seu próprio nó, papéis, configuração, registro
 - [dns-nodes.md](dns-nodes.md) - rodando um nó DNS do Federate

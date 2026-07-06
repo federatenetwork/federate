@@ -35,6 +35,9 @@ Add hosts-file mappings ([hosts-setup.md](docs/en-US/hosts-setup.md)), then open
 
 ## Docs
 
+- [vision.md](docs/en-US/vision.md) - Federate as an alternative internet overlay
+- [federate-uri.md](docs/en-US/federate-uri.md) - the native `fed://` addressing format
+- [native-protocol.md](docs/en-US/native-protocol.md) - the native protocol and transport
 - [architecture.md](docs/en-US/architecture.md) - crates, layers, resolution engine
 - [protocol.md](docs/en-US/protocol.md) - root zone, manifests, content addressing
 - [manifesto.md](docs/en-US/manifesto.md) - why Federate exists

@@ -35,6 +35,13 @@ Add hosts-file mappings ([hosts-setup.md](hosts-setup.md)), then open **http://h
 
 ## Docs
 
+- [vision.md](vision.md) - Federate as an alternative internet overlay
+- [overlay-network.md](overlay-network.md) - the layer map: what Federate owns vs reuses
+- [federate-uri.md](federate-uri.md) - the native `fed://` addressing format
+- [native-protocol.md](native-protocol.md) - the native node/client protocol and transport
+- [browser-compatibility.md](browser-compatibility.md) - DNS/HTTP bridges for normal browsers
+- [future-federate-browser.md](future-federate-browser.md) - the native client boundary
+- [non-html-runtime-roadmap.md](non-html-runtime-roadmap.md) - documents, packages, apps beyond HTML
 - [decentralization.md](decentralization.md) - what is/isn't decentralized, chain of trust
 - [nodes.md](nodes.md) - running your own node, roles, config, registration
 - [dns-nodes.md](dns-nodes.md) - running a Federate DNS node

@@ -11,8 +11,11 @@
 //!
 //! Node 1 is a distributor of signed data, never a blindly trusted authority.
 //!
-//! This crate is transport-agnostic: used by the HTTP gateway today, reusable
-//! by the future DNS resolver, desktop app, publishing tools, peer/CDN.
+//! This crate is transport-agnostic and consumer-agnostic: the SAME engine
+//! serves the native `fed://` path (resolve_uri), the HTTP gateway adapter,
+//! the CLI, DNS decisions, and any future Federate browser. Compatibility
+//! layers translate into a `FederateUri` and call in here; nothing resolves
+//! names on its own.
 
 use federate_client::NodeClient;
 use federate_core::{FederateError, Result};
@@ -347,7 +350,18 @@ impl Resolver {
         Ok(manifest.files.keys().cloned().collect())
     }
 
-    /// Full verified content resolution used by the HTTP gateway.
+    /// Resolve a native Federate URI. This is the canonical entry point:
+    /// `fed://joao.pagina/about` and an HTTP request with Host
+    /// `joao.pagina` + path `/about` resolve through exactly this call.
+    pub async fn resolve_uri(&self, uri: &federate_uri::FederateUri) -> Result<Resolved> {
+        self.resolve(&uri.fqdn(), &uri.path).await
+    }
+
+    /// Full verified content resolution by raw host + path. Prefer
+    /// [`Resolver::resolve_uri`]; this exists for callers that already
+    /// validated a `FederateUri` (its fields feed straight in) and for
+    /// tolerant compatibility surfaces that want structured outcomes
+    /// (`NotFederate`, ...) instead of parse errors.
     pub async fn resolve(&self, host: &str, path: &str) -> Result<Resolved> {
         // 1-2. Parse: syntax check only. Existence comes from the root zone.
         let domain = match FederateDomain::parse(host) {
@@ -633,6 +647,89 @@ mod tests {
             axum::serve(listener, app).await.ok();
         });
         format!("http://{addr}")
+    }
+
+    /// The engine must treat every TLD generically: nothing anywhere may
+    /// special-case `home.fed`. A zone with domains under several official
+    /// TLDs plus one delegated TLD resolves each through the same path.
+    #[tokio::test]
+    async fn any_domain_under_any_tld_resolves_generically() {
+        let dir = tmp("multi-tld");
+        let keys = keys(&dir);
+
+        let mut tlds = BTreeMap::new();
+        let mut domains = BTreeMap::new();
+        for (label, tld) in [
+            ("home", "fed"),
+            ("joao", "pagina"),
+            ("fotolia", "rosa"),
+            ("arcade", "mosca"),
+            ("alguem", "cara"),
+            ("fed", "busca"),
+        ] {
+            tlds.insert(tld.to_string(), signed_tld(&keys, tld));
+            let fqdn = format!("{label}.{tld}");
+            domains.insert(fqdn.clone(), signed_domain(&keys, &fqdn, None));
+        }
+        // A delegated TLD: resolution routes it to the placeholder outcome.
+        let mut delegated = signed_tld(&keys, "femboy");
+        delegated.registry_type = federate_naming::RegistryType::DelegatedHttp;
+        delegated.signature = Some(keys.root.sign(&delegated.signable_bytes().unwrap()));
+        tlds.insert("femboy".into(), delegated);
+
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 1,
+            generated_at: "t".into(),
+            root_public_key: keys.root.node_id(),
+            tlds,
+            domains,
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(keys.root.sign(&zone.signable_bytes().unwrap()));
+
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        RootCache::new(&data_dir).store(&zone).unwrap();
+        let resolver = Resolver::new(
+            NodeClient::new("http://127.0.0.1:1"),
+            &data_dir,
+            Some(keys.root.node_id()),
+        )
+        .unwrap();
+
+        for fqdn in [
+            "home.fed",
+            "joao.pagina",
+            "fotolia.rosa",
+            "arcade.mosca",
+            "alguem.cara",
+            "fed.busca",
+        ] {
+            // Native URI path: record resolves (content fetch would need the
+            // network; the record layer proves the generic chain).
+            let uri = federate_uri::FederateUri::parse(&format!("fed://{fqdn}")).unwrap();
+            assert!(
+                resolver.resolve_domain(&uri.fqdn()).await.is_ok(),
+                "{fqdn} must resolve generically"
+            );
+        }
+
+        // Delegated TLD placeholder: structured outcome, not an error.
+        let uri = federate_uri::FederateUri::parse("fed://store.femboy").unwrap();
+        assert!(matches!(
+            resolver.resolve_uri(&uri).await.unwrap(),
+            Resolved::DelegatedNotImplemented { tld, .. } if tld == "femboy"
+        ));
+
+        // Unknown TLD still fails cleanly through the same path.
+        let uri = federate_uri::FederateUri::parse("fed://x.nowhere").unwrap();
+        assert!(matches!(
+            resolver.resolve_uri(&uri).await.unwrap(),
+            Resolved::TldNotFound { .. }
+        ));
     }
 
     #[tokio::test]

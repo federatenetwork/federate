@@ -35,6 +35,9 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](docs/pt-BR/hosts-setu
 
 ## Documentação
 
+- [vision.md](docs/pt-BR/vision.md) - a Federate como internet alternativa em overlay
+- [federate-uri.md](docs/pt-BR/federate-uri.md) - o formato nativo `fed://`
+- [native-protocol.md](docs/pt-BR/native-protocol.md) - o protocolo nativo e o transporte
 - [architecture.md](docs/pt-BR/architecture.md) - crates, camadas, motor de resolução
 - [protocol.md](docs/pt-BR/protocol.md) - zona raiz, manifestos, endereçamento por conteúdo
 - [manifesto.md](docs/pt-BR/manifesto.md) - por que o Federate existe

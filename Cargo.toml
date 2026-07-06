@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "crates/federate-core",
     "crates/federate-identity",
+    "crates/federate-uri",
+    "crates/federate-protocol",
+    "crates/federate-transport",
     "crates/federate-root",
     "crates/federate-naming",
     "crates/federate-registry",
@@ -51,9 +54,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
+async-trait = "0.1"
 
 federate-core = { path = "crates/federate-core" }
 federate-identity = { path = "crates/federate-identity" }
+federate-uri = { path = "crates/federate-uri" }
+federate-protocol = { path = "crates/federate-protocol" }
+federate-transport = { path = "crates/federate-transport" }
 federate-root = { path = "crates/federate-root" }
 federate-naming = { path = "crates/federate-naming" }
 federate-registry = { path = "crates/federate-registry" }

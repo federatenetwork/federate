@@ -52,6 +52,10 @@ pub struct NodeSection {
     /// UDP DNS listen address (only used with the dns role).
     #[serde(default = "default_dns_listen")]
     pub dns_listen: String,
+    /// Native Federate protocol listen address (framed TCP, port 0xFED).
+    /// Every node speaks the native protocol; HTTP routes are compatibility.
+    #[serde(default = "default_native_listen")]
+    pub native_listen: String,
     /// Data/cache directory. Defaults to the OS data dir + "federate-node".
     #[serde(default)]
     pub data_dir: Option<PathBuf>,
@@ -63,6 +67,10 @@ fn default_http_listen() -> String {
 
 fn default_dns_listen() -> String {
     "0.0.0.0:5353".into()
+}
+
+fn default_native_listen() -> String {
+    "0.0.0.0:4077".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -18,6 +18,9 @@ federate-dns = { workspace = true }
 federate-cdn = { workspace = true }
 federate-search = { workspace = true }
 federate-node = { workspace = true }
+federate-protocol = { workspace = true }
+federate-transport = { workspace = true }
+federate-storage = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

@@ -95,12 +95,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let storage = roles.contains(&NodeRole::Storage);
     let cdn = roles.contains(&NodeRole::Cdn);
+    let mut block_cache: Option<Arc<federate_cdn::CdnCache>> = None;
     if storage || cdn {
         let max_bytes = config.capacity.storage_gb.max(1) * 1024 * 1024 * 1024;
         let cache = Arc::new(federate_cdn::CdnCache::new(
             &data_dir.join("cdn"),
             max_bytes,
         )?);
+        block_cache = Some(cache.clone());
         let state = Arc::new(BlockState {
             cache: cache.clone(),
             resolver: resolver.clone(),
@@ -193,6 +195,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // --- Native Federate protocol listener (every node speaks it) ---
+    if !config.node.native_listen.is_empty() {
+        let native_listen: std::net::SocketAddr = config.node.native_listen.parse()?;
+        let service = Arc::new(NativeService {
+            runtime: runtime.clone(),
+            resolver: resolver.clone(),
+            cache: block_cache.clone(),
+            fetch_on_miss: cdn,
+        });
+        let listener = tokio::net::TcpListener::bind(native_listen).await?;
+        tracing::info!("federate native protocol on fed-tcp://{native_listen}");
+        tokio::spawn(federate_transport::serve(
+            listener,
+            service,
+            format!("federate-noded/{}", federate_node::NODE_VERSION),
+        ));
+    }
+
     // --- Register with the directory + heartbeat ---
     tokio::spawn(
         runtime
@@ -205,6 +225,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("federate-noded HTTP service on http://{listen}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Native-protocol face of this node: answers Federate protocol requests
+/// from the same verified stores the HTTP compatibility routes use.
+struct NativeService {
+    runtime: Arc<NodeRuntime>,
+    resolver: Arc<Resolver>,
+    cache: Option<Arc<federate_cdn::CdnCache>>,
+    fetch_on_miss: bool,
+}
+
+#[federate_transport::async_trait]
+impl federate_transport::NodeService for NativeService {
+    fn node_id(&self) -> String {
+        self.runtime.node_id()
+    }
+
+    fn capabilities(&self) -> Vec<federate_protocol::Capability> {
+        let mut caps = vec![federate_protocol::Capability::Root];
+        if self.cache.is_some() {
+            caps.push(federate_protocol::Capability::Blocks);
+        }
+        caps
+    }
+
+    async fn handle(&self, request: federate_protocol::Message) -> federate_protocol::Message {
+        use federate_protocol::{ErrorCode, Message};
+        match request {
+            Message::GetRoot => match self.resolver.root().await {
+                // Serve only the locally VERIFIED zone; receivers re-verify
+                // its signature against their own pinned key anyway.
+                Ok(zone) => match serde_json::to_vec(&*zone) {
+                    Ok(zone_json) => Message::Root { zone_json },
+                    Err(e) => err(ErrorCode::Unavailable, &e.to_string()),
+                },
+                Err(e) => err(
+                    ErrorCode::Unavailable,
+                    &format!("no verified root zone: {e}"),
+                ),
+            },
+            Message::GetBlock { hash } => {
+                if !federate_storage::is_valid_hash(&hash) {
+                    return err(ErrorCode::BadRequest, "not a valid content address");
+                }
+                let Some(cache) = &self.cache else {
+                    return err(ErrorCode::Unsupported, "this node does not serve blocks");
+                };
+                if let Ok(bytes) = cache.get(&hash) {
+                    return Message::Block { hash, bytes };
+                }
+                if self.fetch_on_miss {
+                    if let Ok(bytes) = self.resolver.fetch_and_cache_block(&hash).await {
+                        cache.put(&hash, &bytes).ok();
+                        return Message::Block { hash, bytes };
+                    }
+                }
+                err(ErrorCode::NotFound, "block not held by this node")
+            }
+            Message::GetStatus => Message::Status {
+                node_id: self.runtime.node_id(),
+                roles: self
+                    .runtime
+                    .config
+                    .node
+                    .roles
+                    .iter()
+                    .map(|r| r.as_str().to_string())
+                    .collect(),
+                region: self.runtime.config.node.region.clone(),
+                agent: format!("federate-noded/{}", federate_node::NODE_VERSION),
+                root_version: self.resolver.root().await.ok().map(|z| z.root_version),
+            },
+            _ => err(
+                ErrorCode::Unsupported,
+                "this node answers GetRoot, GetBlock, and GetStatus",
+            ),
+        }
+    }
+}
+
+fn err(code: federate_protocol::ErrorCode, detail: &str) -> federate_protocol::Message {
+    federate_protocol::Message::Error {
+        code,
+        detail: detail.to_string(),
+    }
 }
 
 async fn serve_block(

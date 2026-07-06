@@ -7,6 +7,13 @@ license.workspace = true
 [dependencies]
 federate-core = { workspace = true }
 federate-resolution = { workspace = true }
+federate-uri = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+federate-identity = { workspace = true }
+federate-naming = { workspace = true }
+federate-root = { workspace = true }
+federate-client = { workspace = true }

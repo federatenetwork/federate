@@ -30,8 +30,21 @@ enum Cmd {
     Status,
     /// Run full diagnostics
     Doctor,
-    /// Resolve a Federate domain (e.g. federate resolve home.fed)
+    /// Resolve a Federate domain or URI (federate resolve fed://joao.pagina)
     Resolve { domain: String },
+    /// Parse and explain a Federate URI (fed://domain/path?query)
+    InspectUri { uri: String },
+    /// Fetch verified content for a Federate URI (full signature/hash chain)
+    Fetch {
+        /// fed://domain/path or bare domain
+        uri: String,
+        /// Write the body to a file instead of stdout
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+        /// Pinned Federate Root public key (hex)
+        #[arg(long)]
+        root_key: Option<String>,
+    },
     /// Root registry commands
     Root {
         #[command(subcommand)]
@@ -310,6 +323,62 @@ struct Ctx {
     bootstrap: String,
 }
 
+/// Accept both native URIs (`fed://x.y/path`) and compatibility spellings
+/// (`x.y`, `http://x.y/path`); everything normalizes to a FederateUri, so
+/// every subcommand works for any valid domain under any valid TLD.
+fn parse_target(input: &str) -> federate_uri::FederateUri {
+    let normalized = if input.starts_with("fed://") {
+        input.to_string()
+    } else {
+        format!("fed://{}", input.trim_start_matches("http://"))
+    };
+    federate_uri::FederateUri::parse(&normalized)
+        .unwrap_or_else(|e| die(&format!("invalid Federate address: {e}")))
+}
+
+/// Native-path fetch: full root -> TLD -> domain -> manifest -> block chain
+/// with local verification, no daemon required. Body goes to stdout (or
+/// --output); status goes to stderr so pipes stay clean.
+async fn fetch_cmd(
+    cli: &Ctx,
+    uri: federate_uri::FederateUri,
+    output: Option<std::path::PathBuf>,
+    root_key: Option<String>,
+) {
+    use federate_resolution::{Resolved, Resolver};
+    let data_dir = DaemonConfig::default_data_dir();
+    std::fs::create_dir_all(&data_dir).ok();
+    let resolver = Resolver::new(
+        federate_client::NodeClient::new(&cli.bootstrap),
+        &data_dir,
+        root_key,
+    )
+    .unwrap_or_else(|e| die(&format!("cannot initialize resolver: {e}")));
+    match resolver.resolve_uri(&uri).await {
+        Ok(Resolved::Content {
+            bytes, mime, hash, ..
+        }) => {
+            eprintln!(
+                "[ok] {uri}: {} bytes, {mime}, block {hash} (chain verified)",
+                bytes.len()
+            );
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &bytes)
+                        .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", path.display())));
+                    eprintln!("saved to {}", path.display());
+                }
+                None => {
+                    use std::io::Write;
+                    std::io::stdout().write_all(&bytes).ok();
+                }
+            }
+        }
+        Ok(other) => die(&format!("{uri} did not resolve to content: {other:?}")),
+        Err(e) => die(&format!("fetch failed for {uri}: {e}")),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let Cli {
@@ -328,13 +397,41 @@ async fn main() {
         },
         Cmd::Doctor => doctor(&cli).await,
         Cmd::Resolve { domain } => {
-            match api_get(&cli.api, &format!("/resolve?domain={domain}&path=/")).await {
+            let uri = parse_target(&domain);
+            match api_get(
+                &cli.api,
+                &format!("/resolve?domain={}&path={}", uri.fqdn(), uri.path),
+            )
+            .await
+            {
                 Ok(v) => pretty(&v),
                 Err(e) => die(&format!(
-                    "daemon not reachable ({e}); is federated running?"
+                    "daemon not reachable ({e}); is federated running?\nno daemon? try: federate fetch {uri}"
                 )),
             }
         }
+        Cmd::InspectUri { uri } => {
+            let parsed = parse_target(&uri);
+            println!("canonical : {parsed}");
+            println!("scheme    : fed");
+            println!("domain    : {}", parsed.fqdn());
+            println!("  label   : {}", parsed.domain.name);
+            println!("  tld     : .{}", parsed.domain.tld);
+            println!("path      : {}", parsed.path);
+            println!(
+                "query     : {}",
+                parsed.query.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "note      : syntax only; whether {} exists is decided by the signed root zone",
+                parsed.fqdn()
+            );
+        }
+        Cmd::Fetch {
+            uri,
+            output,
+            root_key,
+        } => fetch_cmd(&cli, parse_target(&uri), output, root_key).await,
         Cmd::Root { cmd } => root_cmd(&cli, cmd).await,
         Cmd::Tlds | Cmd::Tld { cmd: TldCmd::List } => match fetch_root(&cli.bootstrap).await {
             Ok(zone) => {
@@ -380,8 +477,14 @@ async fn main() {
             cmd: DirectoryCmd::List { role, healthy },
         } => directory_list(&cli, role, healthy).await,
         Cmd::Open { domain } => {
-            // Portless URL: this is the whole point.
-            let url = format!("http://{domain}");
+            // Accepts fed://... and bare domains; opens the browser through
+            // the HTTP compatibility gateway (portless URL).
+            let uri = parse_target(&domain);
+            let url = format!(
+                "http://{}{}",
+                uri.fqdn(),
+                if uri.path == "/" { "" } else { &uri.path }
+            );
             println!("opening {url}");
             #[cfg(target_os = "macos")]
             let cmd = ("open", vec![url.clone()]);

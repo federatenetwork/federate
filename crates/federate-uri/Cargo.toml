@@ -1,0 +1,10 @@
+[package]
+name = "federate-uri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-naming = { workspace = true }
+serde = { workspace = true }
