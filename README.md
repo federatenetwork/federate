@@ -52,7 +52,11 @@ Add hosts-file mappings ([hosts-setup.md](docs/en-US/hosts-setup.md)), then open
 
 ## TLDs
 
-`.fed` official · `.pagina` personal sites · `.rosa` creative spaces · `.cara` identity · `.mosca` weird internet · `.types` typography
+- Core: `.fed` `.busca`
+- People: `.pagina` `.pages` `.cara` `.comu` `.oi` `.weblog`
+- Creative: `.rosa` `.mosca` `.tipos` `.types`
+- Media: `.foto` `.pic` `.vid` `.sound` `.records`
+- Colors: `.amarelo` `.azul` `.verde` `.preto` `.branco` `.blau`
 
 ## Roadmap
 

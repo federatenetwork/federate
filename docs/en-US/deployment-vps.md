@@ -184,7 +184,7 @@ journalctl -u federate-server -n 20 --no-pager
 The startup log prints the root key:
 
 ```
-root zone signed: 9 TLDs, N domains, M blocks (root key <64-hex>)
+root zone signed: T TLDs, N domains, M blocks (root key <64-hex>)
 ```
 
 Put that hex into `/etc/federate/node.env` as `ROOT_KEY=...`, then:

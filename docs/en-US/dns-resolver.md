@@ -9,7 +9,7 @@ touching the gateway.
 ## What it will do
 
 - Listen on localhost (e.g. `127.0.0.1:53`) or an OS-configured resolver address.
-- Answer Federate TLDs (`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.busca`, `.types`):
+- Answer Federate TLDs (every resolvable TLD in the signed root zone; 23 official today):
   - gateway mode: return `127.0.0.1` so the local `federated` gateway serves the site
   - future modes: return remote gateway IPs or local service IPs
 - **Forward all other queries** to the user's normal upstream resolver -

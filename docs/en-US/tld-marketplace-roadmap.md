@@ -8,7 +8,7 @@ document is the plan.
 
 ## Phase 1: now (this repo)
 
-Static official TLDs (`.fed .pagina .rosa .cara .mosca .busca .types`),
+Static official TLDs (23 today; full set in `federate-naming`),
 blocklists (`blocked_tlds.txt` + reserved/policy/brand-safety), root-managed
 domain records, full Ed25519 chain of trust, seed example of a delegated TLD
 (`.femboy`) whose resolution returns `DelegatedRegistryNotImplemented`.

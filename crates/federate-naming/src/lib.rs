@@ -10,13 +10,34 @@ use serde::{Deserialize, Serialize};
 /// The authoritative TLD set lives in the signed root zone; this constant
 /// seeds it and documents the defaults.
 pub const FEDERATE_TLDS: &[(&str, &str)] = &[
+    // Core namespaces
     ("fed", "Official Federate namespace: specs, protocol docs, registry, status, root info, governance, official tools."),
-    ("pagina", "Personal sites, blogs, portfolios, small homepages, essays, public profiles."),
-    ("rosa", "Creative, visual, poetic, aesthetic, soft, personal, art-oriented spaces."),
-    ("cara", "Identity, profiles, personal presence, people pages, creator pages, public cards."),
-    ("mosca", "Weird internet, experiments, memes, small games, odd projects, underground pages, strange communities."),
     ("busca", "Federate search and discovery services (e.g. fed.busca). Official, root-managed."),
-    ("types", "Typography, type design, lettering, fonts, and written-form craft."),
+    // People and communities
+    ("pagina", "Personal sites, blogs, portfolios, small homepages, essays, public profiles (Portuguese namespace)."),
+    ("pages", "Personal sites, blogs, portfolios, small homepages, essays, public profiles (English namespace)."),
+    ("cara", "Identity, profiles, personal presence, people pages, creator pages, public cards."),
+    ("comu", "Communities, groups, collectives, clubs, shared spaces."),
+    ("oi", "Casual hellos, lightweight personal pages, contact cards."),
+    ("weblog", "Blogs, journals, diaries, running logs of any kind."),
+    // Creative
+    ("rosa", "Creative, visual, poetic, aesthetic, soft, personal, art-oriented spaces."),
+    ("mosca", "Weird internet, experiments, memes, small games, odd projects, underground pages, strange communities."),
+    ("tipos", "Typography, type design, lettering, fonts, and written-form craft (Portuguese namespace)."),
+    ("types", "Typography, type design, lettering, fonts, and written-form craft (English namespace)."),
+    // Media
+    ("foto", "Photography, photo essays, galleries (Portuguese namespace)."),
+    ("pic", "Images, illustration, visual snippets, galleries (English namespace)."),
+    ("vid", "Video pages, channels, screening rooms."),
+    ("sound", "Audio, music, sound art, radio, podcasts."),
+    ("records", "Music labels, discographies, archives, collections."),
+    // Colors: thematic creative/personal spaces
+    ("amarelo", "Color namespace (yellow): thematic creative and personal spaces."),
+    ("azul", "Color namespace (blue): thematic creative and personal spaces."),
+    ("verde", "Color namespace (green): thematic creative and personal spaces."),
+    ("preto", "Color namespace (black): thematic creative and personal spaces."),
+    ("branco", "Color namespace (white): thematic creative and personal spaces."),
+    ("blau", "Color namespace (blue): thematic creative and personal spaces."),
 ];
 
 pub fn is_default_official_tld(tld: &str) -> bool {

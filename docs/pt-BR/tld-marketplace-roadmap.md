@@ -8,7 +8,7 @@ implementado hoje.** Este documento é o plano.
 
 ## Fase 1: agora (este repositório)
 
-TLDs oficiais estáticos (`.fed .pagina .rosa .cara .mosca .busca .types`),
+TLDs oficiais estáticos (23 hoje; conjunto completo em `federate-naming`),
 listas de bloqueio (`blocked_tlds.txt` + reservados/política/proteção de
 marca), registros de domínio gerenciados pela raiz, cadeia de confiança
 Ed25519 completa, exemplo semente de um TLD delegado (`.femboy`) cuja

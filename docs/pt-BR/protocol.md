@@ -28,7 +28,7 @@ JSON estruturado, serializável, cacheável e assinável, servido em `GET /v1/ro
 
 ## TLDs
 
-`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.busca`, `.types`, definidos em `federate-naming`.
+23 TLDs oficiais (`.fed`, `.busca`, `.pagina`, `.pages`, `.cara`, `.comu`, `.oi`, `.weblog`, `.rosa`, `.mosca`, `.tipos`, `.types`, `.foto`, `.pic`, `.vid`, `.sound`, `.records`, e seis espaços de cores), definidos em `federate-naming`.
 
 ## Registros de domínio
 

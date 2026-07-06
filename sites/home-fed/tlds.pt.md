@@ -7,12 +7,23 @@ inventar um.
 | TLD | Para quê |
 |---|---|
 | `.fed` | Espaço oficial da Federate: especificações, registro, status, governança |
-| `.pagina` | Sites pessoais, blogs, portfólios, ensaios |
-| `.rosa` | Espaços criativos, visuais, poéticos, artísticos |
-| `.cara` | Identidade, perfis, páginas de pessoas, cartões públicos |
-| `.mosca` | Internet esquisita: experimentos, memes, joguinhos, páginas underground |
 | `.busca` | Busca e descoberta da Federate (`fed.busca`): sem anúncios, sem rastreamento |
-| `.types` | Tipografia, type design, lettering, fontes |
+| `.pagina` | Sites pessoais, blogs, portfólios, ensaios (português) |
+| `.pages` | Sites pessoais, blogs, portfólios, ensaios (inglês) |
+| `.cara` | Identidade, perfis, páginas de pessoas, cartões públicos |
+| `.comu` | Comunidades, grupos, coletivos, clubes |
+| `.oi` | Ois casuais, páginas pessoais leves, cartões de contato |
+| `.weblog` | Blogs, diários, registros contínuos |
+| `.rosa` | Espaços criativos, visuais, poéticos, artísticos |
+| `.mosca` | Internet esquisita: experimentos, memes, joguinhos, páginas underground |
+| `.tipos` | Tipografia, type design, lettering, fontes (português) |
+| `.types` | Tipografia, type design, lettering, fontes (inglês) |
+| `.foto` | Fotografia, ensaios fotográficos, galerias (português) |
+| `.pic` | Imagens, ilustração, recortes visuais (inglês) |
+| `.vid` | Páginas de vídeo, canais, salas de exibição |
+| `.sound` | Áudio, música, sound art, rádio, podcasts |
+| `.records` | Selos musicais, discografias, arquivos |
+| `.amarelo` `.azul` `.verde` `.preto` `.branco` `.blau` | Espaços de cores: espaços criativos e pessoais temáticos |
 
 Todos são oficiais e operados pela raiz por enquanto. TLDs delegados, operados
 pela comunidade, chegam nas próximas fases.

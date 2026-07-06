@@ -6,10 +6,10 @@
 
 ## Espaços de nomes
 
-`.fed` · `.pagina` · `.rosa` · `.cara` · `.mosca` · `.busca` · `.types`
+`.fed` · `.pagina` · `.pages` · `.cara` · `.rosa` · `.mosca` · `.busca` · `.foto` · `.sound` e mais: 23 espaços de nomes.
 
 Todo nome é assinado, da chave raiz até os blocos de conteúdo verificados por hash.
-[Conheça cada espaço e como um nome vira página →](/tlds.html)
+[Conheça todos os espaços e como um nome vira página →](/tlds.html)
 
 ## Busca
 

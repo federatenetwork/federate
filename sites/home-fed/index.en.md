@@ -6,10 +6,10 @@
 
 ## Namespaces
 
-`.fed` · `.pagina` · `.rosa` · `.cara` · `.mosca` · `.busca` · `.types`
+`.fed` · `.pagina` · `.pages` · `.cara` · `.rosa` · `.mosca` · `.busca` · `.foto` · `.sound` and more: 23 namespaces.
 
 Every name is signed, from the root key down to hash-verified content blocks.
-[Meet each namespace and how a name becomes a page →](/tlds.html)
+[Meet all namespaces and how a name becomes a page →](/tlds.html)
 
 ## Search
 

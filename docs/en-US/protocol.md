@@ -28,7 +28,7 @@ Structured, serializable, cacheable, signable JSON served at `GET /v1/root`:
 
 ## TLDs
 
-`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.busca`, `.types`, defined in `federate-naming`.
+23 official TLDs (`.fed`, `.busca`, `.pagina`, `.pages`, `.cara`, `.comu`, `.oi`, `.weblog`, `.rosa`, `.mosca`, `.tipos`, `.types`, `.foto`, `.pic`, `.vid`, `.sound`, `.records`, and six color namespaces), defined in `federate-naming`.
 
 ## Domain records
 

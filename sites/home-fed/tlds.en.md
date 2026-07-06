@@ -7,12 +7,23 @@ gateway can invent one.
 | TLD | What it is for |
 |---|---|
 | `.fed` | Official Federate namespace: specs, registry, status, governance |
-| `.pagina` | Personal sites, blogs, portfolios, essays |
-| `.rosa` | Creative, visual, poetic, art-oriented spaces |
-| `.cara` | Identity, profiles, people pages, public cards |
-| `.mosca` | Weird internet: experiments, memes, small games, underground pages |
 | `.busca` | Federate search and discovery (`fed.busca`): no ads, no tracking |
-| `.types` | Typography, type design, lettering, fonts |
+| `.pagina` | Personal sites, blogs, portfolios, essays (Portuguese) |
+| `.pages` | Personal sites, blogs, portfolios, essays (English) |
+| `.cara` | Identity, profiles, people pages, public cards |
+| `.comu` | Communities, groups, collectives, clubs |
+| `.oi` | Casual hellos, lightweight personal pages, contact cards |
+| `.weblog` | Blogs, journals, diaries, running logs |
+| `.rosa` | Creative, visual, poetic, art-oriented spaces |
+| `.mosca` | Weird internet: experiments, memes, small games, underground pages |
+| `.tipos` | Typography, type design, lettering, fonts (Portuguese) |
+| `.types` | Typography, type design, lettering, fonts (English) |
+| `.foto` | Photography, photo essays, galleries (Portuguese) |
+| `.pic` | Images, illustration, visual snippets (English) |
+| `.vid` | Video pages, channels, screening rooms |
+| `.sound` | Audio, music, sound art, radio, podcasts |
+| `.records` | Music labels, discographies, archives |
+| `.amarelo` `.azul` `.verde` `.preto` `.branco` `.blau` | Color namespaces: thematic creative and personal spaces |
 
 All are official and root-operated for now. Delegated, community-operated
 TLDs arrive in later phases.
