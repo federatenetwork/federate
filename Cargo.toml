@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/federate-core",
+    "crates/federate-identity",
+    "crates/federate-root",
+    "crates/federate-naming",
+    "crates/federate-registry",
+    "crates/federate-resolution",
+    "crates/federate-manifest",
+    "crates/federate-storage",
+    "crates/federate-node",
+    "crates/federate-directory",
+    "crates/federate-cdn",
+    "crates/federate-search",
+    "crates/federate-bootstrap",
+    "crates/federate-gateway",
+    "crates/federate-dns",
+    "crates/federate-client",
+    "crates/federate-cli",
+    "crates/federated",
+    "crates/federate-server",
+    "crates/federate-dnsd",
+    "crates/federate-gatewayd",
+    "crates/federate-noded",
+    "crates/federate-searchd",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/c3b/federatenetwork"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+blake3 = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+thiserror = "1"
+dirs = "5"
+mime_guess = "2"
+walkdir = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+
+federate-core = { path = "crates/federate-core" }
+federate-identity = { path = "crates/federate-identity" }
+federate-root = { path = "crates/federate-root" }
+federate-naming = { path = "crates/federate-naming" }
+federate-registry = { path = "crates/federate-registry" }
+federate-resolution = { path = "crates/federate-resolution" }
+federate-manifest = { path = "crates/federate-manifest" }
+federate-storage = { path = "crates/federate-storage" }
+federate-node = { path = "crates/federate-node" }
+federate-directory = { path = "crates/federate-directory" }
+federate-cdn = { path = "crates/federate-cdn" }
+federate-search = { path = "crates/federate-search" }
+federate-bootstrap = { path = "crates/federate-bootstrap" }
+federate-gateway = { path = "crates/federate-gateway" }
+federate-dns = { path = "crates/federate-dns" }
+federate-client = { path = "crates/federate-client" }
+
+[profile.release]
+lto = true
+strip = true

@@ -1,0 +1,12 @@
+[package]
+name = "federate-bootstrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-directory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }

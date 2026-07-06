@@ -1,0 +1,19 @@
+[package]
+name = "federate-resolution"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-naming = { workspace = true }
+federate-root = { workspace = true }
+federate-manifest = { workspace = true }
+federate-storage = { workspace = true }
+federate-client = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+mime_guess = { workspace = true }
+tracing = { workspace = true }
+federate-directory = { workspace = true }
+federate-cdn = { workspace = true }

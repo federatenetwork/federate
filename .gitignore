@@ -1,0 +1,6 @@
+/target
+.federate-server/
+.federate-dnsd/
+.federate-gatewayd/
+.federate-noded/
+.federate-searchd/

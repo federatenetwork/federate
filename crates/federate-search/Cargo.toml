@@ -1,0 +1,14 @@
+[package]
+name = "federate-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-resolution = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,108 @@
+# Signatures & Chain of Trust
+
+## Keys in one paragraph
+
+A keypair has a **private key** (secret, proves ownership by producing
+signatures) and a **public key** (a public identifier, safe to publish —
+knowing it lets anyone *verify* signatures but never *create* them). In
+Federate, public keys ARE the identity layer: TLD owners, TLD operators, and
+domain owners are all public keys. Ownership of anything is proven by a
+signature from the matching private key.
+
+## The chain of trust
+
+```
+Federate Root Key
+  → TLD Record        (signed by the Root Key)
+    → Domain Record   (signed by the TLD operator key named in the TLD record)
+      → Site Manifest (signed by the domain owner key named in the domain record)
+        → Content Blocks (verified by BLAKE3 hash listed in the manifest)
+```
+
+Node 1 is a **distributor of signed data, not a trusted authority**. The
+daemon trusts valid signatures and content hashes — never server responses.
+A compromised or impersonated Node 1 cannot forge any record without the
+corresponding private keys; the daemon rejects the data and keeps serving the
+last verified cached zone.
+
+### 1. Federate Root Key
+
+Top authority. Signs the root zone and every TLD record (official and
+delegated). The **public** root key is configured in `federated` via
+`--root-key <hex>`, or pinned on first use (TOFU) and persisted to
+`<data-dir>/trusted-root-key`. The **private** root key lives only on the
+root registry host (`.federate-server/root/identity.key` in dev) and is never
+embedded in the daemon or exposed by any API.
+
+### 2. TLD records
+
+Signed by the Root Key. The daemon rejects unsigned or invalidly signed TLD
+records.
+
+### 3. Domain records
+
+Signed by the TLD operator key. Before continuing, the daemon verifies: the
+TLD exists; its record verifies against the Root Key; the domain record's
+signature matches the operator key authorized in that TLD record; the domain
+is `active`; the domain actually belongs to that TLD.
+
+### 4. Site manifests
+
+Signed by the domain owner key. The daemon verifies: the domain record is
+valid; the fetched manifest bytes hash to the `manifest_hash` in the domain
+record; the manifest's signature is valid; the signer equals the domain
+record's `owner_public_key`; the manifest's `domain` equals the requested
+domain.
+
+### 5. Content blocks
+
+Verified by hash: fetched bytes must match the hash in the manifest, and
+cached bytes are re-hashed before every serve. Invalid blocks are rejected
+and evicted from cache.
+
+## Canonical signing format
+
+Algorithm: **Ed25519**, signatures hex-encoded. Signed payloads are
+canonicalized before signing so signatures never depend on formatting:
+
+- serialize the record to JSON with the `signature` field set to `null`
+  removed / `None` (the field is excluded from the signed payload),
+- canonical form = **compact JSON** (no whitespace) with **object keys sorted
+  lexicographically at every nesting level**; arrays keep their order,
+- sign the resulting bytes; store the hex signature in `signature`.
+
+Never sign pretty-printed or insertion-ordered JSON. Implementation:
+`federate_core::canonical::canonical_bytes` + each record's
+`signable_bytes()`.
+
+Every signed object carries: the payload fields, `signature`,
+`signature_algorithm` (`"ed25519"`), the relevant signer public key
+(`root_public_key` / `operator_public_key` / `owner_public_key`), and
+`created_at` / `updated_at` timestamps plus version fields.
+
+## Replay protection
+
+MVP: timestamps (`created_at`/`updated_at`) and version numbers
+(`root_version`, record `version`) let clients prefer newer data and detect
+stale substitution. Future mutation APIs (registering/updating TLDs and
+domains at runtime) MUST additionally use server-issued nonces or
+challenge-response so a captured signed request cannot be replayed.
+
+## When verification fails
+
+The daemon serves a styled **Federate security error page** stating which
+layer failed (root / tld / domain / manifest / content), for which domain,
+and why — and does not serve the content. `federate doctor`,
+`federate root verify`, `federate tld verify <tld>`, `federate domain verify
+<domain>`, and `federate manifest verify <domain>` reproduce each check from
+the command line.
+
+## Future work
+
+- **Key rotation**: root and operator key rollover via cross-signed
+  transition records.
+- **Recovery keys**: pre-registered secondary keys for owner account
+  recovery.
+- **Multisig**: expensive/high-value TLDs guarded by m-of-n signatures.
+- **Root mirrors**: multiple mirrors distributing the same root-signed zone
+  (signatures make mirrors trustless).

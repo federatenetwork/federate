@@ -1,0 +1,9 @@
+# Federate reserved TLD names (infrastructure, governance, safety, future use)
+fed
+root
+admin
+registry
+status
+nodes
+protocol
+system

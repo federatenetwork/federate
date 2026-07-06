@@ -1,0 +1,3 @@
+# Federate Network MVP hosts mappings — append to /etc/hosts
+# (Windows: C:\Windows\System32\drivers\etc\hosts)
+127.0.0.1 home.fed

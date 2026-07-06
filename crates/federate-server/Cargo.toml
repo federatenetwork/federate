@@ -1,0 +1,26 @@
+[package]
+name = "federate-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "federate-server"
+path = "src/main.rs"
+
+[dependencies]
+federate-core = { workspace = true }
+federate-naming = { workspace = true }
+federate-root = { workspace = true }
+federate-manifest = { workspace = true }
+federate-storage = { workspace = true }
+federate-identity = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+federate-directory = { workspace = true }

@@ -1,0 +1,6 @@
+# Caddy reverse proxy for Node 1 — automatic Let's Encrypt for the real
+# public domain federate.network.
+federate.network {
+	reverse_proxy 127.0.0.1:9000
+	encode gzip
+}

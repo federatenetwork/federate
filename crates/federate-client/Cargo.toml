@@ -1,0 +1,13 @@
+[package]
+name = "federate-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-root = { workspace = true }
+federate-manifest = { workspace = true }
+federate-storage = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }

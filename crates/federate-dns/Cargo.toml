@@ -1,0 +1,15 @@
+[package]
+name = "federate-dns"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-naming = { workspace = true }
+federate-root = { workspace = true }
+federate-resolution = { workspace = true }
+federate-directory = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }

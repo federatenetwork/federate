@@ -1,0 +1,18 @@
+[package]
+name = "federate-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+federate-core = { workspace = true }
+federate-identity = { workspace = true }
+federate-directory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }

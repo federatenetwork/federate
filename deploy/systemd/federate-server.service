@@ -1,0 +1,19 @@
+[Unit]
+Description=Federate Network Node 1 server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=federate
+Group=federate
+ExecStart=/usr/local/bin/federate-server --listen 127.0.0.1:9000 --sites-dir /var/lib/federate/sites --data-dir /var/lib/federate/data
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/federate
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

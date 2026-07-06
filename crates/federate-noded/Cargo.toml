@@ -1,0 +1,26 @@
+[package]
+name = "federate-noded"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "federate-noded"
+path = "src/main.rs"
+
+[dependencies]
+federate-core = { workspace = true }
+federate-client = { workspace = true }
+federate-resolution = { workspace = true }
+federate-directory = { workspace = true }
+federate-gateway = { workspace = true }
+federate-dns = { workspace = true }
+federate-cdn = { workspace = true }
+federate-search = { workspace = true }
+federate-node = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
