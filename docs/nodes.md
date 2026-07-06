@@ -29,7 +29,7 @@ roles = ["gateway", "cdn"]
 region = "br-sp"
 public_ip = "x.x.x.x"
 # listen = "0.0.0.0:8080"       # HTTP service (health, blocks, gateway…)
-# dns_listen = "0.0.0.0:5353"   # UDP DNS (dns role only)
+# dns_listen = "0.0.0.0:5353"   # DNS, UDP+TCP (dns role only)
 
 [network]
 bootstrap = "https://federate.network"

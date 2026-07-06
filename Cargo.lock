@@ -550,6 +550,7 @@ dependencies = [
 name = "federate-dns"
 version = "0.1.0"
 dependencies = [
+ "federate-client",
  "federate-core",
  "federate-directory",
  "federate-naming",

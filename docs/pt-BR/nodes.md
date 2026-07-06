@@ -30,7 +30,7 @@ roles = ["gateway", "cdn"]
 region = "br-sp"
 public_ip = "x.x.x.x"
 # listen = "0.0.0.0:8080"       # serviço HTTP (saúde, blocos, gateway…)
-# dns_listen = "0.0.0.0:5353"   # DNS UDP (apenas para o papel dns)
+# dns_listen = "0.0.0.0:5353"   # DNS, UDP+TCP (apenas para o papel dns)
 
 [network]
 bootstrap = "https://federate.network"

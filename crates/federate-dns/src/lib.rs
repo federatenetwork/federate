@@ -9,6 +9,8 @@
 //! - never returns one hardcoded IP; answers use a low TTL (30s)
 //! - forwards every other name to upstream DNS (1.1.1.1 / 8.8.8.8) so normal
 //!   internet resolution is never broken
+//! - listens on UDP **and** TCP (RFC 7766 length-prefixed framing); stub
+//!   resolvers that retry over TCP get the same answers
 //!
 //! DNS answers *where a name should go* (gateways). Gateways then do the full
 //! root → TLD → domain → manifest → block verification chain.
@@ -26,8 +28,8 @@ use wire::{DnsQuery, QueryType};
 pub const DEFAULT_TTL_SECS: u32 = 30;
 pub const DEFAULT_UPSTREAM: &str = "1.1.1.1:53";
 /// Max A/AAAA records per answer. Keeps plain-UDP responses safely under the
-/// classic 512-byte limit (we do not speak TCP or EDNS yet); 8 gateways is
-/// plenty for failover.
+/// classic 512-byte limit (no EDNS yet), so no client is ever forced onto
+/// the TCP retry path; 8 gateways is plenty for failover.
 pub const MAX_ANSWERS: usize = 8;
 /// Max DNS packets handled concurrently. Each forwarded query holds a UDP
 /// socket for up to 3s; without a bound, a packet flood turns into unbounded
@@ -35,6 +37,14 @@ pub const MAX_ANSWERS: usize = 8;
 /// (and are dropped there under real overload, which is the correct UDP
 /// behavior).
 pub const MAX_INFLIGHT_QUERIES: usize = 512;
+/// Max concurrent TCP DNS connections (separate pool from UDP so a TCP
+/// connection flood cannot starve UDP service, and vice versa).
+pub const MAX_TCP_CONNECTIONS: usize = 128;
+/// A TCP connection is dropped after this long without a complete query.
+pub const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Largest TCP DNS message we accept. Queries are tiny; this is just a
+/// sanity bound so a client cannot make us allocate 64KB per connection.
+pub const MAX_TCP_MESSAGE: usize = 4096;
 
 pub struct DnsServer {
     /// Shared, signature-verifying resolution engine (root zone source).
@@ -99,13 +109,19 @@ impl DnsServer {
         }
     }
 
-    /// Run the UDP DNS server. Also spawns root-zone + gateway refresh loops.
+    /// Run the DNS server on UDP and TCP at `listen`. Also spawns root-zone
+    /// + gateway refresh loops.
     pub async fn run(self: Arc<Self>, listen: SocketAddr) -> federate_core::Result<()> {
         let socket = Arc::new(UdpSocket::bind(listen).await?);
+        let tcp = tokio::net::TcpListener::bind(listen).await?;
         tracing::info!(
-            "federate DNS listening on udp://{listen} (upstream {})",
+            "federate DNS listening on udp://{listen} + tcp://{listen} (upstream {})",
             self.upstream
         );
+        {
+            let server = self.clone();
+            tokio::spawn(async move { server.run_tcp(tcp).await });
+        }
 
         // Background: keep gateways fresh (DNS TTL is 30s; refresh faster).
         {
@@ -150,6 +166,60 @@ impl DnsServer {
         }
     }
 
+    /// Accept loop for TCP DNS (RFC 7766: each message is prefixed with a
+    /// two-byte big-endian length). Same query handling as UDP.
+    async fn run_tcp(self: Arc<Self>, listener: tokio::net::TcpListener) {
+        let conns = Arc::new(tokio::sync::Semaphore::new(MAX_TCP_CONNECTIONS));
+        loop {
+            let Ok((stream, peer)) = listener.accept().await else {
+                continue;
+            };
+            // Backpressure: stop accepting while MAX_TCP_CONNECTIONS handlers
+            // are running. Semaphore is never closed, so acquire cannot fail.
+            let permit = conns.clone().acquire_owned().await.expect("semaphore");
+            let server = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = server.serve_tcp_conn(stream).await {
+                    tracing::debug!("tcp dns connection from {peer} ended: {e}");
+                }
+                drop(permit);
+            });
+        }
+    }
+
+    /// Serve length-prefixed DNS queries on one TCP connection until the
+    /// client closes, sends garbage, or goes idle.
+    async fn serve_tcp_conn(&self, mut stream: tokio::net::TcpStream) -> std::io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let mut len_buf = [0u8; 2];
+            match tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut len_buf)).await {
+                Ok(Ok(_)) => {}
+                // Idle timeout or clean close: just drop the connection.
+                _ => return Ok(()),
+            }
+            let len = u16::from_be_bytes(len_buf) as usize;
+            if len == 0 || len > MAX_TCP_MESSAGE {
+                return Ok(());
+            }
+            let mut packet = vec![0u8; len];
+            match tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut packet)).await {
+                Ok(Ok(_)) => {}
+                _ => return Ok(()),
+            }
+            let Some(reply) = self.handle_packet(&packet).await else {
+                return Ok(());
+            };
+            if reply.len() > u16::MAX as usize {
+                return Ok(());
+            }
+            stream
+                .write_all(&(reply.len() as u16).to_be_bytes())
+                .await?;
+            stream.write_all(&reply).await?;
+        }
+    }
+
     /// Handle one raw DNS packet; returns the reply packet.
     pub async fn handle_packet(&self, packet: &[u8]) -> Option<Vec<u8>> {
         let query = DnsQuery::parse(packet).ok()?;
@@ -188,10 +258,12 @@ impl DnsServer {
         }
     }
 
-    /// Forward a query to the configured upstream resolver. The socket is
-    /// `connect`ed to upstream so the kernel drops datagrams from any other
-    /// source, and we additionally require the reply's transaction ID to match
-    /// the query; together these block off-path answer spoofing.
+    /// Forward a query to the configured upstream resolver over UDP (TCP
+    /// clients get their answer re-framed; a truncated upstream answer keeps
+    /// its TC bit, so real resolvers know to ask upstream directly). The
+    /// socket is `connect`ed to upstream so the kernel drops datagrams from
+    /// any other source, and we additionally require the reply's transaction
+    /// ID to match the query; together these block off-path answer spoofing.
     async fn forward_upstream(&self, packet: &[u8], query_id: u16) -> Option<Vec<u8>> {
         let bind = if self.upstream.is_ipv6() {
             "[::]:0"
@@ -215,5 +287,106 @@ impl DnsServer {
                 return Some(buf[..len].to_vec());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use federate_client::NodeClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// End-to-end TCP framing: a non-Federate query arrives length-prefixed
+    /// over TCP, is forwarded to (a fake) upstream over UDP, and the answer
+    /// comes back length-prefixed on the same connection.
+    #[tokio::test]
+    async fn tcp_query_roundtrip_via_upstream() {
+        // Fake upstream: echoes whatever it receives (same transaction ID,
+        // so the forwarder accepts it as the answer).
+        let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let (len, peer) = upstream.recv_from(&mut buf).await.unwrap();
+            upstream.send_to(&buf[..len], peer).await.unwrap();
+        });
+
+        // Server with an unreachable bootstrap: no verified root zone, so
+        // every name is non-Federate and gets forwarded.
+        let dir = std::env::temp_dir().join(format!("fed-dns-tcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolver = Arc::new(
+            federate_resolution::Resolver::new(NodeClient::new("http://127.0.0.1:1"), &dir, None)
+                .unwrap(),
+        );
+        let server = DnsServer::new(
+            resolver,
+            DirectoryClient::new("http://127.0.0.1:1"),
+            upstream_addr,
+        );
+
+        // One-connection TCP listener wired straight to serve_tcp_conn.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conn_server = server.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            conn_server.serve_tcp_conn(stream).await.ok();
+        });
+
+        let query = wire::build_query(0x4242, "example.com", 1);
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(&(query.len() as u16).to_be_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&query).await.unwrap();
+
+        let mut len_buf = [0u8; 2];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_exact(&mut len_buf),
+        )
+        .await
+        .expect("reply within 5s")
+        .unwrap();
+        let len = u16::from_be_bytes(len_buf) as usize;
+        let mut reply = vec![0u8; len];
+        stream.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply, query, "echoed upstream answer relayed over TCP");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Garbage TCP framing must close the connection, never hang or panic.
+    #[tokio::test]
+    async fn tcp_zero_length_frame_closes_connection() {
+        let dir = std::env::temp_dir().join(format!("fed-dns-tcp0-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolver = Arc::new(
+            federate_resolution::Resolver::new(NodeClient::new("http://127.0.0.1:1"), &dir, None)
+                .unwrap(),
+        );
+        let server = DnsServer::new(
+            resolver,
+            DirectoryClient::new("http://127.0.0.1:1"),
+            "127.0.0.1:1".parse().unwrap(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conn_server = server.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            conn_server.serve_tcp_conn(stream).await.ok();
+        });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(&0u16.to_be_bytes()).await.unwrap();
+        // Server must close; read returns 0 bytes (EOF) instead of hanging.
+        let mut buf = [0u8; 2];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+            .await
+            .expect("close within 5s")
+            .unwrap();
+        assert_eq!(n, 0, "connection closed on zero-length frame");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

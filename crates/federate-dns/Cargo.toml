@@ -13,3 +13,6 @@ federate-directory = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+federate-client = { workspace = true }

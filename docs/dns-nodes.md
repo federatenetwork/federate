@@ -34,15 +34,17 @@ or invented IP.
 Operational limits (current implementation):
 
 - Answers are capped at **8 records** so every response fits a plain
-  512-byte UDP reply.
-- **UDP only** for now - no TCP listener, no EDNS. Truncation never happens
-  because of the answer cap, but resolvers that insist on TCP retry will not
-  get an answer yet.
+  512-byte UDP reply; no client is ever forced onto the TCP retry path.
+- Listens on **UDP and TCP** on the same port (TCP uses RFC 7766
+  length-prefixed framing; idle connections drop after 10s). No EDNS yet.
+- Concurrency is bounded (512 in-flight queries, 128 TCP connections) so a
+  packet or connection flood cannot grow tasks and file descriptors without
+  limit.
 - TLDs whose root-zone record is expired (`expires_at` in the past) are
   treated as non-Federate and forwarded upstream like any other name.
-- Upstream forwarding uses a fresh connected socket per query (random source
-  port) and requires a matching DNS transaction ID, so off-path spoofed
-  answers are dropped.
+- Upstream forwarding always goes over UDP with a fresh connected socket per
+  query (random source port) and requires a matching DNS transaction ID, so
+  off-path spoofed answers are dropped.
 
 DNS only answers *where a name should go*. Gateways still verify the full
 root → TLD → domain → manifest → block chain before serving anything.

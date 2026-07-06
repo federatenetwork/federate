@@ -1,0 +1,44 @@
+[Unit]
+Description=Federate Network gateway node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=true
+StateDirectory=federate-gatewayd
+# PUBLIC_IP, ROOT_KEY, REGION come from /etc/federate/node.env
+# (copy deploy/federate-node.env.example there and edit).
+EnvironmentFile=/etc/federate/node.env
+# The gateway listens on 127.0.0.1:8080 behind Caddy, which owns port 80 and
+# routes every non-federate.network Host header here (see deploy/caddy/).
+# To run the gateway directly on port 80 with no Caddy, change --listen to
+# 0.0.0.0:80 (AmbientCapabilities below already allows the low port).
+ExecStart=/usr/local/bin/federate-gatewayd \
+    --listen 127.0.0.1:8080 \
+    --bootstrap https://federate.network \
+    --root-key ${ROOT_KEY} \
+    --public-ip ${PUBLIC_IP} \
+    --region ${REGION} \
+    --health-listen 0.0.0.0:8081 \
+    --data-dir /var/lib/federate-gatewayd
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# Hardening
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

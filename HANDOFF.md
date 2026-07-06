@@ -281,3 +281,55 @@ Full-repo review pass on top of the hardening above. Build/clippy/fmt clean,
 - Delegated registry resolution is still a phase-6 stub.
 - `desired_tlds` at the repo root is an unreferenced scratch wordlist;
   decide whether it belongs in docs or should be deleted.
+
+---
+
+# PRODUCTION DEPLOYMENT PREP (2026-07-06)
+
+Goal: first real external deployment on a Hetzner (or any) VPS behind
+`federate.network`. No new product features; deployment correctness only.
+
+## Code
+
+- **TCP 53 implemented** (was the last "documented but unsupported" gap):
+  `DnsServer::run` now binds TCP alongside UDP on the same address. RFC 7766
+  length-prefixed framing, 10s idle timeout, 4KB message cap, 128-connection
+  semaphore (separate from the 512 UDP in-flight cap). Upstream forwarding
+  stays UDP; a truncated upstream answer keeps its TC bit. Two new tests:
+  TCP roundtrip through a fake upstream, zero-length frame closes cleanly.
+  `federate-dnsd` and `federate-noded` (dns role) get TCP with no changes.
+
+## Deploy files
+
+- `deploy/systemd/federate-dnsd.service` + `federate-gatewayd.service`: new
+  units (DynamicUser, StateDirectory, CAP_NET_BIND_SERVICE, same hardening
+  set as federate-server.service). Both read `/etc/federate/node.env`.
+- `deploy/federate-node.env.example`: PUBLIC_IP / ROOT_KEY / REGION.
+- `deploy/caddy/Caddyfile`: now routes by Host: `federate.network` to Node 1
+  (with TLS), **everything else on port 80 to the gateway** (catch-all
+  `http://` block). That resolves the Caddy-vs-gateway port 80 conflict and
+  is what serves `http://home.fed` publicly.
+
+## Docs
+
+- `docs/deployment-hetzner.md` rewritten as a full runbook (pt-BR twin
+  updated to match): checklist, exact Ubuntu/Debian commands, systemd
+  install, systemd-resolved stub listener disable (frees port 53), firewall
+  table, DNS records, root key pinning, on-box health checks, external
+  validation (`dig @IP home.fed` UDP+TCP, `dig google.com`, `curl -H "Host:
+  home.fed"`), phone browser test, friends-only test protocol, rollback.
+- `docs/dns-nodes.md` + pt-BR: UDP+TCP behavior, concurrency bounds.
+
+## Validation
+
+- fmt / clippy `-D warnings` / tests (44) / release build: all clean.
+- Live smoke: server + gatewayd + dnsd on loopback; `dig` over UDP and TCP
+  answers `home.fed` with the gateway IP (TTL 30, AA flag), `google.com`
+  forwarded, gateway serves verified content via Host header.
+
+## Ready state
+
+Friends-only test is a go once the operator: points `federate.network` A
+record at the VPS, runs the runbook top to bottom, and distributes the VPS
+IP + root key. Remaining known limitations unchanged (no EDNS, in-memory
+Node 1 content maps, delegated registries stubbed).

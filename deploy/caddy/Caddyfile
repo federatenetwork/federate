@@ -1,6 +1,22 @@
-# Caddy reverse proxy for Node 1: automatic Let's Encrypt for the real
-# public domain federate.network.
+# Caddy owns ports 80 and 443 on Node 1 and routes by Host header:
+#
+#   https://federate.network      -> federate-server (127.0.0.1:9000)
+#   http://federate.network       -> redirect to https (Caddy default)
+#   http://<anything else>        -> federate-gatewayd (127.0.0.1:8080)
+#
+# The catch-all is what makes http://home.fed work: a browser whose DNS
+# points at this box sends "Host: home.fed" to port 80, Caddy hands it to
+# the gateway, and the gateway runs the full root -> TLD -> domain ->
+# manifest -> block verification chain before serving anything.
+#
+# Let's Encrypt for federate.network is automatic (HTTP-01 works because
+# Caddy still owns port 80).
+
 federate.network {
 	reverse_proxy 127.0.0.1:9000
 	encode gzip
+}
+
+http:// {
+	reverse_proxy 127.0.0.1:8080
 }

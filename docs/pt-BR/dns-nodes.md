@@ -34,10 +34,11 @@ obsoleto ou inventado.
 Limites operacionais (implementação atual):
 
 - As respostas são limitadas a **8 registros**, de modo que toda resposta cabe em uma
-  resposta UDP simples de 512 bytes.
-- **Somente UDP** por enquanto, sem listener TCP e sem EDNS. Truncamento nunca acontece
-  por causa do limite de respostas, mas resolvedores que insistem em repetir via TCP não
-  receberão resposta ainda.
+  resposta UDP simples de 512 bytes; nenhum cliente é forçado ao caminho de retry via TCP.
+- Escuta em **UDP e TCP** na mesma porta (TCP usa o framing com prefixo de tamanho do
+  RFC 7766; conexões ociosas caem após 10s). Ainda sem EDNS.
+- A concorrência é limitada (512 consultas em andamento, 128 conexões TCP), então uma
+  inundação de pacotes ou conexões não faz tasks e file descriptors crescerem sem limite.
 - TLDs cujo registro na zona raiz está expirado (`expires_at` no passado) são
   tratados como não Federate e encaminhados ao upstream como qualquer outro nome.
 - O encaminhamento ao upstream usa um socket conectado novo por consulta (porta de origem
