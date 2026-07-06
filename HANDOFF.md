@@ -192,7 +192,7 @@ Inspection + fixes on top of the handoff above. Build/tests/clippy all clean:
 - `federate-naming`: added the official root-managed `.busca` TLD.
 - `federate-registry`: 3 new tests (root-managed routing, delegated routing,
   unknown-TLD/missing-domain errors).
-- Docs: `deployment-hetzner.md` (DNS port 53 UDP+TCP, gateway/node deploy,
+- Docs: `deployment-vps.md` (DNS port 53 UDP+TCP, gateway/node deploy,
   ufw firewall, key storage/backups, logs), `node-directory.md` (anti-abuse
   rules), and this handoff.
 
@@ -232,7 +232,7 @@ cargo build --release
 ./target/release/federate root verify --bootstrap http://127.0.0.1:9100
 ```
 
-Hetzner: see `docs/deployment-hetzner.md` §8-10 (DNS port 53, gateway node,
+VPS: see `docs/deployment-vps.md` §8-10 (DNS port 53, gateway node,
 ufw firewall, key backups).
 
 ---
@@ -286,7 +286,7 @@ Full-repo review pass on top of the hardening above. Build/clippy/fmt clean,
 
 # PRODUCTION DEPLOYMENT PREP (2026-07-06)
 
-Goal: first real external deployment on a Hetzner (or any) VPS behind
+Goal: first real external deployment on any VPS behind
 `federate.network`. No new product features; deployment correctness only.
 
 ## Code
@@ -312,7 +312,8 @@ Goal: first real external deployment on a Hetzner (or any) VPS behind
 
 ## Docs
 
-- `docs/deployment-hetzner.md` rewritten as a full runbook (pt-BR twin
+- `docs/deployment-vps.md` (renamed from deployment-hetzner.md) rewritten
+  as a full runbook (pt-BR twin
   updated to match): checklist, exact Ubuntu/Debian commands, systemd
   install, systemd-resolved stub listener disable (frees port 53), firewall
   table, DNS records, root key pinning, on-box health checks, external

@@ -1,9 +1,12 @@
-# Implantando o Node 1 na Hetzner (ou qualquer VPS)
+# Implantando o Node 1 em um VPS
 
-> [English version](../deployment-hetzner.md)
+> [English version](../deployment-vps.md)
 
-Este é o runbook de produção para a primeira implantação real: um VPS Ubuntu
-ou Debian rodando toda a stack atrás do domínio público `federate.network`.
+Este é o runbook de produção para a primeira implantação real: um VPS de
+qualquer provedor (Hetzner, DigitalOcean, Vultr, OVH, AWS Lightsail, ...)
+rodando Ubuntu ou Debian com toda a stack atrás do domínio público
+`federate.network`. Os únicos requisitos do provedor: um IPv4 público, SSH
+root e nenhum firewall do provedor bloqueando as portas 53/80/443.
 
 O que roda na máquina:
 

@@ -47,7 +47,7 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](hosts-setup.md)) e en
 - [manifesto.md](manifesto.md) - por que o Federate existe
 - [markdown-pages.md](markdown-pages.md) - páginas oficiais em markdown + o renderizador `fed-md.js`
 - [dns-resolver.md](dns-resolver.md) - resolvedor DNS local planejado
-- [deployment-hetzner.md](deployment-hetzner.md) - implantando o Node 1
+- [deployment-vps.md](deployment-vps.md) - implantando o Node 1
 - [desktop-setup.md](desktop-setup.md) - onboarding de amigos
 - [hosts-setup.md](hosts-setup.md) - mapeamentos no arquivo hosts
 - [port-80-setup.md](port-80-setup.md) - URLs sem porta

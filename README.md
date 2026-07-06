@@ -35,7 +35,7 @@ Add hosts-file mappings ([hosts-setup.md](docs/hosts-setup.md)), then open **htt
 - [protocol.md](docs/protocol.md) - root zone, manifests, content addressing
 - [manifesto.md](docs/manifesto.md) - why Federate exists
 - [dns-resolver.md](docs/dns-resolver.md) - planned local DNS resolver
-- [deployment-hetzner.md](docs/deployment-hetzner.md) - deploying Node 1
+- [deployment-vps.md](docs/deployment-vps.md) - deploying Node 1
 - [desktop-setup.md](docs/desktop-setup.md) - friend onboarding
 - [hosts-setup.md](docs/hosts-setup.md) - hosts-file mappings
 - [port-80-setup.md](docs/port-80-setup.md) - portless URLs

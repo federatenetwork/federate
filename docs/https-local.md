@@ -6,7 +6,7 @@
 
 The MVP flow is `http://home.fed`. Public `https://federate.network` uses
 normal Let's Encrypt (real public domain, handled by Caddy; see
-[deployment-hetzner.md](deployment-hetzner.md)).
+[deployment-vps.md](deployment-vps.md)).
 
 Internal domains (`home.fed`, `joao.pagina`, `fotolia.rosa`, `arcade.mosca`, …)
 **cannot** use Let's Encrypt: they are internal Federate TLDs with no public

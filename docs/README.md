@@ -47,7 +47,7 @@ Add hosts-file mappings ([hosts-setup.md](hosts-setup.md)), then open **http://h
 - [manifesto.md](manifesto.md) - why Federate exists
 - [markdown-pages.md](markdown-pages.md) - official pages as markdown + the `fed-md.js` renderer
 - [dns-resolver.md](dns-resolver.md) - planned local DNS resolver
-- [deployment-hetzner.md](deployment-hetzner.md) - deploying Node 1
+- [deployment-vps.md](deployment-vps.md) - deploying Node 1
 - [desktop-setup.md](desktop-setup.md) - friend onboarding
 - [hosts-setup.md](hosts-setup.md) - hosts-file mappings
 - [port-80-setup.md](port-80-setup.md) - portless URLs

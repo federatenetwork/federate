@@ -1,10 +1,12 @@
-# Deploying Node 1 on Hetzner (or any VPS)
+# Deploying Node 1 on a VPS
 
-> [Versão em português (pt-BR)](pt-BR/deployment-hetzner.md)
+> [Versão em português (pt-BR)](pt-BR/deployment-vps.md)
 
-This is the production runbook for the first real deployment: one Ubuntu or
-Debian VPS running the whole stack behind the public domain
-`federate.network`.
+This is the production runbook for the first real deployment: one VPS from
+any provider (Hetzner, DigitalOcean, Vultr, OVH, AWS Lightsail, ...) running
+Ubuntu or Debian with the whole stack behind the public domain
+`federate.network`. The only provider requirements: a public IPv4, root SSH,
+and no provider firewall blocking ports 53/80/443.
 
 What runs on the box:
 
