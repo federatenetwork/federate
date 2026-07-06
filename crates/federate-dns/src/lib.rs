@@ -29,6 +29,12 @@ pub const DEFAULT_UPSTREAM: &str = "1.1.1.1:53";
 /// classic 512-byte limit (we do not speak TCP or EDNS yet); 8 gateways is
 /// plenty for failover.
 pub const MAX_ANSWERS: usize = 8;
+/// Max DNS packets handled concurrently. Each forwarded query holds a UDP
+/// socket for up to 3s; without a bound, a packet flood turns into unbounded
+/// task and file-descriptor growth. Excess packets wait in the OS buffer
+/// (and are dropped there under real overload, which is the correct UDP
+/// behavior).
+pub const MAX_INFLIGHT_QUERIES: usize = 512;
 
 pub struct DnsServer {
     /// Shared, signature-verifying resolution engine (root zone source).
@@ -124,9 +130,14 @@ impl DnsServer {
             });
         }
 
+        let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_QUERIES));
         let mut buf = [0u8; 1500];
         loop {
             let (len, peer) = socket.recv_from(&mut buf).await?;
+            // Backpressure: stop reading new packets while MAX_INFLIGHT_QUERIES
+            // handlers are already running. Semaphore is never closed, so
+            // acquire cannot fail.
+            let permit = inflight.clone().acquire_owned().await.expect("semaphore");
             let packet = buf[..len].to_vec();
             let server = self.clone();
             let socket = socket.clone();
@@ -134,6 +145,7 @@ impl DnsServer {
                 if let Some(reply) = server.handle_packet(&packet).await {
                     socket.send_to(&reply, peer).await.ok();
                 }
+                drop(permit);
             });
         }
     }

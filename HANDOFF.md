@@ -234,3 +234,50 @@ cargo build --release
 
 Hetzner: see `docs/deployment-hetzner.md` §8-10 (DNS port 53, gateway node,
 ufw firewall, key backups).
+
+---
+
+# ENGINEERING REVIEW ROUND 2 (2026-07-06)
+
+Full-repo review pass on top of the hardening above. Build/clippy/fmt clean,
+42 tests passing, ETag flow smoke-tested with real processes.
+
+## Changed
+
+- **Gateway ETag/304**: `Resolved::Content` now carries the block's content
+  hash; the gateway sends it as a strong `ETag` and answers `304 Not
+  Modified` to matching `If-None-Match` (strong, weak `W/`, lists, `*`).
+  Content-addressed hashes are perfect validators: same hash means
+  byte-identical bytes. Verified live: 304 on match, 200 on mismatch.
+- **DNS flood bound**: `DnsServer::run` caps concurrent packet handlers at
+  `MAX_INFLIGHT_QUERIES` (512) with a semaphore. Before, every UDP packet
+  spawned a task, and forwarded queries each held a socket for up to 3s, so
+  a flood meant unbounded task/fd growth.
+- **CDN cache I/O**: `CdnCache::get` no longer rewrites the whole JSON index
+  on every read (recency stays in memory; index persists on `put`). Eviction
+  loop now stops at the size target instead of scanning the full list. Index
+  writes are now write-then-rename (crash cannot truncate).
+- **Delegated registry client**: `fetch_domain` now goes through
+  `federate_client::get_json` (10s timeout + 4MB cap) instead of an
+  uncapped per-call reqwest client. That was the last uncapped cross-node
+  fetch in the codebase.
+- **Immutable cache headers**: `/v1/block/:hash` and `/v1/manifest/:hash`
+  (Node 1 and noded) send `Cache-Control: public, max-age=31536000,
+  immutable`; the URL is the content address, so the response can never
+  change.
+- **CLI timeouts**: all CLI HTTP calls share one client with a 15s timeout
+  (bare `reqwest::get` has none, so a dead node used to hang commands
+  forever).
+- **CI**: `.github/workflows/ci.yml` runs fmt check, clippy `-D warnings`,
+  tests, and a release build on push/PR.
+
+## Remaining risks / TODOs (carried + new)
+
+- `health_endpoint` may still be a private/loopback IP (deliberate, for
+  local dev); front a public directory with a private-range filter.
+- DNS is UDP-only (no TCP fallback / TC bit).
+- Node 1 block/manifest maps are in-memory, rebuilt from `sites/` at startup.
+- No registration replay window (timestamp/nonce check) yet.
+- Delegated registry resolution is still a phase-6 stub.
+- `desired_tlds` at the repo root is an unreferenced scratch wordlist;
+  decide whether it belongs in docs or should be deleted.

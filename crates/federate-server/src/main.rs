@@ -522,6 +522,11 @@ async fn domain_record(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
+/// Headers for content-addressed responses: the URL is the BLAKE3 hash of
+/// the bytes, so the response can never change and caches may keep it forever.
+const CONTENT_ADDRESSED_CACHE: (header::HeaderName, &str) =
+    (header::CACHE_CONTROL, "public, max-age=31536000, immutable");
+
 async fn manifest(
     State(s): State<Arc<Store>>,
     AxPath(hash): AxPath<String>,
@@ -529,7 +534,15 @@ async fn manifest(
     s.manifests
         .get(&hash)
         .cloned()
-        .map(|b| ([(header::CONTENT_TYPE, "application/json")], b))
+        .map(|b| {
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json"),
+                    CONTENT_ADDRESSED_CACHE,
+                ],
+                b,
+            )
+        })
         .ok_or(StatusCode::NOT_FOUND)
 }
 
@@ -540,7 +553,15 @@ async fn block(
     s.blocks
         .get(&hash)
         .cloned()
-        .map(|b| ([(header::CONTENT_TYPE, "application/octet-stream")], b))
+        .map(|b| {
+            (
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream"),
+                    CONTENT_ADDRESSED_CACHE,
+                ],
+                b,
+            )
+        })
         .ok_or(StatusCode::NOT_FOUND)
 }
 

@@ -152,9 +152,10 @@ async fn api_resolve(
             path,
             bytes,
             mime,
+            hash,
         }) => Json(serde_json::json!({
             "status": "ok", "domain": domain, "path": path,
-            "mime": mime, "size": bytes.len(),
+            "mime": mime, "size": bytes.len(), "hash": hash,
         })),
         Ok(other) => Json(serde_json::json!({ "status": format!("{other:?}") })),
         Err(e) => Json(serde_json::json!({ "status": "error", "error": e.to_string() })),

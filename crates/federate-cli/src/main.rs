@@ -250,15 +250,28 @@ enum DirectoryCmd {
 // helpers
 // ---------------------------------------------------------------------------
 
+/// Shared HTTP client. Every CLI request gets a timeout so a dead daemon or
+/// node makes the command fail with a message instead of hanging forever
+/// (reqwest has no timeout by default).
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("reqwest client")
+    })
+}
+
 async fn api_get(api: &str, path: &str) -> Result<serde_json::Value, String> {
     let url = format!("http://{api}{path}");
-    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let resp = http().get(&url).send().await.map_err(|e| e.to_string())?;
     resp.json().await.map_err(|e| e.to_string())
 }
 
 async fn api_delete(api: &str, path: &str) -> Result<serde_json::Value, String> {
     let url = format!("http://{api}{path}");
-    let resp = reqwest::Client::new()
+    let resp = http()
         .delete(&url)
         .send()
         .await
@@ -268,7 +281,7 @@ async fn api_delete(api: &str, path: &str) -> Result<serde_json::Value, String> 
 
 async fn node_get(bootstrap: &str, path: &str) -> Result<serde_json::Value, String> {
     let url = format!("{}{path}", bootstrap.trim_end_matches('/'));
-    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let resp = http().get(&url).send().await.map_err(|e| e.to_string())?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Err("not found".into());
     }
@@ -655,7 +668,9 @@ async fn manifest_verify(cli: &Ctx, domain: &str) {
         cli.bootstrap.trim_end_matches('/'),
         rec.manifest_hash
     );
-    let bytes = reqwest::get(&url)
+    let bytes = http()
+        .get(&url)
+        .send()
         .await
         .and_then(|r| r.error_for_status())
         .unwrap_or_else(|e| die(&format!("cannot fetch manifest ({e})")))
@@ -749,7 +764,7 @@ async fn node_cmd(cli: &Ctx, cmd: NodeCmd) {
         },
         NodeCmd::Health { node } => {
             let url = format!("{}/health", node.trim_end_matches('/'));
-            match reqwest::get(&url).await {
+            match http().get(&url).send().await {
                 Ok(r) if r.status().is_success() => println!("[ok] {node} is healthy"),
                 Ok(r) => die(&format!("[!!] {node} answered {}", r.status())),
                 Err(e) => die(&format!("[!!] {node} unreachable ({e})")),
@@ -823,12 +838,7 @@ async fn dns_test(domain: &str, server: &str) {
 
 async fn gateway_test(domain: &str, gateway: &str) {
     let url = format!("{}/", gateway.trim_end_matches('/'));
-    match reqwest::Client::new()
-        .get(&url)
-        .header("Host", domain)
-        .send()
-        .await
-    {
+    match http().get(&url).header("Host", domain).send().await {
         Ok(r) => {
             let status = r.status();
             let via = r
@@ -1006,7 +1016,7 @@ async fn doctor(cli: &Ctx) {
                 println!("[!!] resolve check failed: {e}");
             }
         }
-        match reqwest::Client::new()
+        match http()
             .get("http://127.0.0.1:80/")
             .header("Host", "home.fed")
             .send()

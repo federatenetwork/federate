@@ -211,14 +211,20 @@ async fn serve_block(
     State(s): State<Arc<BlockState>>,
     AxPath(hash): AxPath<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // The URL is the content address of the bytes: responses are immutable,
+    // so downstream caches may keep them forever.
+    let headers = [
+        (header::CONTENT_TYPE, "application/octet-stream"),
+        (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+    ];
     if let Ok(bytes) = s.cache.get(&hash) {
-        return Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes));
+        return Ok((headers, bytes));
     }
     if s.fetch_on_miss {
         // CDN behavior: pull from upstream (hash-verified), cache, serve.
         if let Ok(bytes) = s.resolver.fetch_and_cache_block(&hash).await {
             s.cache.put(&hash, &bytes).ok();
-            return Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes));
+            return Ok((headers, bytes));
         }
     }
     Err(StatusCode::NOT_FOUND)

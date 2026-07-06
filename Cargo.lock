@@ -679,6 +679,7 @@ name = "federate-registry"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "federate-client",
  "federate-core",
  "federate-identity",
  "federate-naming",

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+federate-client = { workspace = true }
 federate-core = { workspace = true }
 federate-naming = { workspace = true }
 federate-root = { workspace = true }

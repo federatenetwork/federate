@@ -100,18 +100,10 @@ impl DelegatedRegistryClient {
     }
 
     pub async fn fetch_domain(&self, fqdn: &str) -> Result<DomainRecord> {
+        // Operator registries are untrusted peers: same timeout + download
+        // cap as every other cross-node fetch, then signature verification.
         let url = format!("{}/v1/domain/{fqdn}", self.endpoint);
-        let rec: DomainRecord = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("reqwest client")
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| FederateError::Network(e.to_string()))?
-            .json()
-            .await
-            .map_err(|e| FederateError::Network(e.to_string()))?;
+        let rec: DomainRecord = serde_json::from_value(federate_client::get_json(&url).await?)?;
         rec.verify(&self.operator_public_key)?;
         if rec.is_expired() {
             return Err(FederateError::TldUnavailable {

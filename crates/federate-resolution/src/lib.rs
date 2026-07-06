@@ -33,6 +33,9 @@ pub enum Resolved {
         path: String,
         bytes: Vec<u8>,
         mime: String,
+        /// Content address of the served block (BLAKE3 hex). Stable per
+        /// content version, so gateways can use it as a strong ETag.
+        hash: String,
     },
     /// Host is not even a syntactically valid Federate name.
     NotFederate { host: String },
@@ -513,6 +516,7 @@ impl Resolver {
             path: path.to_string(),
             bytes,
             mime,
+            hash: file_hash,
         })
     }
 }

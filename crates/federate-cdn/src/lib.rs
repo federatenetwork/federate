@@ -109,8 +109,13 @@ impl CdnCache {
     }
 
     fn persist_index(&self, index: &CacheIndex) {
+        // Write-then-rename: a crash mid-write must not truncate the index
+        // (a corrupt index is ignored on load and the cache looks empty).
         if let Ok(bytes) = serde_json::to_vec(index) {
-            std::fs::write(&self.index_path, bytes).ok();
+            let tmp = self.index_path.with_extension("json.tmp");
+            if std::fs::write(&tmp, bytes).is_ok() {
+                std::fs::rename(&tmp, &self.index_path).ok();
+            }
         }
     }
 
@@ -121,13 +126,16 @@ impl CdnCache {
 
     pub fn get(&self, hash: &str) -> Result<Vec<u8>> {
         let bytes = self.store.get(hash)?;
+        // Recency is tracked in memory only; the index hits disk on put().
+        // Rewriting the JSON index for every read would turn each cache hit
+        // into a full-index disk write. Losing sub-put recency on a crash
+        // only makes the next eviction slightly less accurate.
         let mut index = self.index.lock().unwrap();
         index
             .entries
             .entry(hash.to_string())
             .or_insert((0, bytes.len() as u64))
             .0 = now_secs();
-        self.persist_index(&index);
         Ok(bytes)
     }
 
@@ -148,7 +156,10 @@ impl CdnCache {
                 .collect();
             by_age.sort_by_key(|(_, t, _)| *t);
             for (victim, _, size) in by_age {
-                if total <= self.max_bytes || victim == hash {
+                if total <= self.max_bytes {
+                    break;
+                }
+                if victim == hash {
                     continue;
                 }
                 self.store.remove(&victim).ok();

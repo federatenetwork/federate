@@ -74,19 +74,40 @@ async fn handle(
     }
 
     match resolver.resolve(host, path).await {
-        Ok(Resolved::Content { bytes, mime, .. }) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, mime)
-            // Serve the declared MIME verbatim; never let a browser sniff a
-            // block into an executable type it wasn't published as.
-            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-            .header(header::REFERRER_POLICY, "no-referrer")
-            // Content is verified per manifest version; short TTL keeps
-            // browsers fresh after a site republish.
-            .header(header::CACHE_CONTROL, "public, max-age=60")
-            .header("x-federate-gateway", "federated")
-            .body(Body::from(bytes))
-            .unwrap(),
+        Ok(Resolved::Content {
+            bytes, mime, hash, ..
+        }) => {
+            // Content is addressed by its BLAKE3 hash, so the hash is a
+            // perfect strong ETag: same hash = byte-identical content.
+            let etag = format!("\"{hash}\"");
+            if headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|inm| etag_matches(inm, &etag))
+            {
+                return Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header(header::ETAG, etag)
+                    .header(header::CACHE_CONTROL, "public, max-age=60")
+                    .body(Body::empty())
+                    .unwrap();
+            }
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, mime)
+                // Serve the declared MIME verbatim; never let a browser sniff a
+                // block into an executable type it wasn't published as.
+                .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+                .header(header::REFERRER_POLICY, "no-referrer")
+                // Content is verified per manifest version; short TTL keeps
+                // browsers fresh after a site republish, and the ETag turns
+                // revalidations into 304s.
+                .header(header::CACHE_CONTROL, "public, max-age=60")
+                .header(header::ETAG, etag)
+                .header("x-federate-gateway", "federated")
+                .body(Body::from(bytes))
+                .unwrap()
+        }
         Ok(Resolved::NotFederate { .. }) => {
             (StatusCode::NOT_FOUND, "404 not found\n").into_response()
         }
@@ -169,6 +190,16 @@ async fn handle(
     }
 }
 
+/// Does an If-None-Match header value match our ETag? Handles the `*`
+/// wildcard, comma-separated lists, and weak validators (`W/"..."`): weak
+/// comparison is fine here because equal hashes mean byte-identical content.
+fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    if_none_match.split(',').any(|t| {
+        let t = t.trim();
+        t == "*" || t == etag || t.strip_prefix("W/") == Some(etag)
+    })
+}
+
 /// HTML-escape untrusted values (request paths, upstream errors) before
 /// interpolating them into error pages.
 fn esc(s: &str) -> String {
@@ -208,7 +239,19 @@ h1{{font-weight:normal}}code{{background:var(--surface);padding:.15em .4em;borde
 
 #[cfg(test)]
 mod tests {
-    use super::esc;
+    use super::{esc, etag_matches};
+
+    #[test]
+    fn etag_matching_rules() {
+        let etag = "\"abc123\"";
+        assert!(etag_matches("\"abc123\"", etag));
+        assert!(etag_matches("*", etag));
+        assert!(etag_matches("\"zzz\", \"abc123\"", etag));
+        assert!(etag_matches("W/\"abc123\"", etag));
+        assert!(!etag_matches("\"other\"", etag));
+        assert!(!etag_matches("abc123", etag)); // unquoted is not a valid match
+        assert!(!etag_matches("", etag));
+    }
 
     #[test]
     fn esc_neutralizes_xss_payloads() {
