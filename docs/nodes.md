@@ -1,5 +1,7 @@
 # Running a Federate node
 
+> [Versão em português (pt-BR)](pt-BR/nodes.md)
+
 Anyone can run Federate infrastructure. A node is identified by an Ed25519
 keypair generated on first run; its public key is its `node_id`.
 
@@ -7,7 +9,7 @@ keypair generated on first run; its public key is its `node_id`.
 
 | Role | What it does |
 |---|---|
-| `root-authority` | Signs TLD records and the root zone. **Only the official Federate root can run this** — the directory rejects the role from any other key. |
+| `root-authority` | Signs TLD records and the root zone. **Only the official Federate root can run this** - the directory rejects the role from any other key. |
 | `root-mirror` | Serves signed root zone copies. Cannot create or modify TLDs. |
 | `dns` | Answers Federate DNS queries with healthy gateway IPs; forwards everything else upstream. |
 | `gateway` | Receives browser HTTP requests and serves verified Federate sites. |
@@ -74,7 +76,7 @@ Every node exposes:
 - `GET /roles` → roles list
 
 The directory's health checker polls `/health` and marks nodes **online**,
-**degraded** (1–2 consecutive failures), or **offline** (3+).
+**degraded** (1-2 consecutive failures), or **offline** (3+).
 
 ## CLI
 

@@ -1,4 +1,4 @@
-//! federate-registry — registry model on top of the signed root zone.
+//! federate-registry: registry model on top of the signed root zone.
 //!
 //! Hierarchy: Federate Root Registry → TLD (root-managed or delegated) →
 //! domain records. The root zone is the single source of truth for which
@@ -53,6 +53,12 @@ impl<'a> RegistryView<'a> {
                 status: tld_rec.status.as_str().into(),
             });
         }
+        if tld_rec.is_expired() {
+            return Err(FederateError::TldUnavailable {
+                tld: domain.tld.clone(),
+                status: "expired".into(),
+            });
+        }
         match tld_rec.registry_type {
             RegistryType::RootManaged => {
                 let rec = self
@@ -60,6 +66,12 @@ impl<'a> RegistryView<'a> {
                     .lookup(&domain.fqdn())
                     .ok_or_else(|| FederateError::DomainNotFound(domain.fqdn()))?;
                 rec.verify(&tld_rec.operator_public_key)?;
+                if rec.is_expired() {
+                    return Err(FederateError::TldUnavailable {
+                        tld: domain.tld.clone(),
+                        status: "expired".into(),
+                    });
+                }
                 Ok(DomainSource::RootManaged(Box::new(rec.clone())))
             }
             _ => Ok(DomainSource::Delegated {
@@ -73,7 +85,7 @@ impl<'a> RegistryView<'a> {
 
 /// Client for a delegated TLD operator registry. Fetches domain records over
 /// HTTP and verifies them against the operator key from the root-signed TLD
-/// record — the operator server is never trusted blindly.
+/// record; the operator server is never trusted blindly.
 pub struct DelegatedRegistryClient {
     endpoint: String,
     operator_public_key: String,
@@ -89,13 +101,24 @@ impl DelegatedRegistryClient {
 
     pub async fn fetch_domain(&self, fqdn: &str) -> Result<DomainRecord> {
         let url = format!("{}/v1/domain/{fqdn}", self.endpoint);
-        let rec: DomainRecord = reqwest::get(&url)
+        let rec: DomainRecord = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("reqwest client")
+            .get(&url)
+            .send()
             .await
             .map_err(|e| FederateError::Network(e.to_string()))?
             .json()
             .await
             .map_err(|e| FederateError::Network(e.to_string()))?;
         rec.verify(&self.operator_public_key)?;
+        if rec.is_expired() {
+            return Err(FederateError::TldUnavailable {
+                tld: rec.tld.clone(),
+                status: "expired".into(),
+            });
+        }
         Ok(rec)
     }
 }
@@ -239,6 +262,100 @@ mod tests {
             }
             other => panic!("expected delegated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn expired_domain_record_rejected() {
+        let root = NodeIdentity::load_or_create(&tmp("exp-root")).unwrap();
+        let operator = NodeIdentity::load_or_create(&tmp("exp-op")).unwrap();
+        let past = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+
+        let mut tlds = BTreeMap::new();
+        tlds.insert(
+            "fed".to_string(),
+            tld_rec(
+                &root,
+                &operator,
+                "fed",
+                TldStatus::Official,
+                RegistryType::RootManaged,
+            ),
+        );
+        let mut rec = DomainRecord {
+            domain: "old.fed".into(),
+            tld: "fed".into(),
+            label: "old".into(),
+            owner_public_key: "00".repeat(32),
+            target_type: TargetType::Manifest,
+            manifest_hash: federate_storage_hash(),
+            service_id: None,
+            node_id: None,
+            status: DomainStatus::Active,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            expires_at: Some(past),
+            renewal: None,
+            pricing: None,
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        rec.signature = Some(operator.sign(&rec.signable_bytes().unwrap()));
+        let mut domains = BTreeMap::new();
+        domains.insert("old.fed".to_string(), rec);
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 1,
+            generated_at: "t".into(),
+            root_public_key: root.node_id(),
+            tlds,
+            domains,
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(root.sign(&zone.signable_bytes().unwrap()));
+
+        let view = RegistryView::new(&zone);
+        // Signature is valid, but the lease expired: must NOT resolve.
+        assert!(matches!(
+            view.locate_domain("old.fed"),
+            Err(FederateError::TldUnavailable { status, .. }) if status == "expired"
+        ));
+    }
+
+    #[test]
+    fn expired_tld_rejected() {
+        let root = NodeIdentity::load_or_create(&tmp("exptld-root")).unwrap();
+        let operator = NodeIdentity::load_or_create(&tmp("exptld-op")).unwrap();
+        let past = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        let mut tld = tld_rec(
+            &root,
+            &operator,
+            "lapsed",
+            TldStatus::Delegated,
+            RegistryType::DelegatedHttp,
+        );
+        tld.expires_at = Some(past);
+        tld.signature = Some(root.sign(&tld.signable_bytes().unwrap()));
+        let mut tlds = BTreeMap::new();
+        tlds.insert("lapsed".to_string(), tld);
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 1,
+            generated_at: "t".into(),
+            root_public_key: root.node_id(),
+            tlds,
+            domains: BTreeMap::new(),
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(root.sign(&zone.signable_bytes().unwrap()));
+        let view = RegistryView::new(&zone);
+        assert!(matches!(
+            view.locate_domain("shop.lapsed"),
+            Err(FederateError::TldUnavailable { status, .. }) if status == "expired"
+        ));
     }
 
     #[test]

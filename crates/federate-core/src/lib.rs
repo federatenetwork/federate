@@ -1,4 +1,4 @@
-//! federate-core — shared types, errors, config, constants for Federate Network.
+//! federate-core: shared types, errors, config, constants for Federate Network.
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;

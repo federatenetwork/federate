@@ -1,5 +1,7 @@
 # Architecture
 
+> [Versão em português (pt-BR)](pt-BR/architecture.md)
+
 ## Layers
 
 Resolution is deliberately **not** baked into the HTTP gateway. The central
@@ -50,7 +52,7 @@ Host: home.fed, Path: /
 ```
 
 Domain records resolve to **identities** (manifest hash today; owner, service,
-and node identities are placeholder fields for later phases) — never directly
+and node identities are placeholder fields for later phases), never directly
 to public IPs.
 
 ## Offline resilience

@@ -1,4 +1,4 @@
-//! federate-identity — local node identity, keys, signatures.
+//! federate-identity: local node identity, keys, signatures.
 
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use federate_core::Result;

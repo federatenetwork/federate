@@ -476,6 +476,7 @@ dependencies = [
 name = "federate-cdn"
 version = "0.1.0"
 dependencies = [
+ "federate-client",
  "federate-core",
  "federate-directory",
  "federate-storage",
@@ -628,6 +629,7 @@ dependencies = [
 name = "federate-naming"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "federate-core",
  "federate-identity",
  "serde",
@@ -690,10 +692,13 @@ dependencies = [
 name = "federate-resolution"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "chrono",
  "federate-cdn",
  "federate-client",
  "federate-core",
  "federate-directory",
+ "federate-identity",
  "federate-manifest",
  "federate-naming",
  "federate-root",

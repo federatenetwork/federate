@@ -1,12 +1,52 @@
-//! federate-client — HTTP client for Node 1 APIs (bootstrap, root, manifests, blocks).
+//! federate-client: HTTP client for Node 1 APIs (bootstrap, root, manifests, blocks).
 
 use federate_core::{FederateError, Result};
 use federate_manifest::Manifest;
 use federate_root::RootZone;
 
-/// One-off JSON GET (shared HTTP stack for small callers).
+/// Download caps. Every fetch from another node (Node 1, mirrors, providers)
+/// is bounded so a malicious or broken peer cannot stream unbounded bytes
+/// into memory. Blocks/manifests are hash-verified after the capped read.
+pub const MAX_ROOT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_BLOCK_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read a response body, failing as soon as it exceeds `max` bytes (checks
+/// the Content-Length header first, then enforces the cap while streaming).
+pub async fn read_capped(resp: reqwest::Response, max: u64) -> Result<Vec<u8>> {
+    let url = resp.url().to_string();
+    let too_big =
+        |got: u64| FederateError::Network(format!("{url} response exceeds {max} bytes ({got})"));
+    if let Some(len) = resp.content_length() {
+        if len > max {
+            return Err(too_big(len));
+        }
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let mut resp = resp;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| FederateError::Network(e.to_string()))?
+    {
+        if out.len() as u64 + chunk.len() as u64 > max {
+            return Err(too_big(out.len() as u64 + chunk.len() as u64));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// One-off JSON GET (shared HTTP stack for small callers). Timeout and size
+/// capped like every other cross-node fetch.
 pub async fn get_json(url: &str) -> Result<serde_json::Value> {
-    let resp = reqwest::get(url)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("reqwest client");
+    let resp = client
+        .get(url)
+        .send()
         .await
         .map_err(|e| FederateError::Network(e.to_string()))?;
     if !resp.status().is_success() {
@@ -15,9 +55,8 @@ pub async fn get_json(url: &str) -> Result<serde_json::Value> {
             resp.status()
         )));
     }
-    resp.json()
-        .await
-        .map_err(|e| FederateError::Network(e.to_string()))
+    let bytes = read_capped(resp, 4 * 1024 * 1024).await?;
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 #[derive(Clone)]
@@ -41,7 +80,7 @@ impl NodeClient {
         &self.base
     }
 
-    async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+    async fn get_bytes(&self, path: &str, max: u64) -> Result<Vec<u8>> {
         let url = format!("{}{}", self.base, path);
         let resp = self
             .http
@@ -55,15 +94,11 @@ impl NodeClient {
                 resp.status()
             )));
         }
-        Ok(resp
-            .bytes()
-            .await
-            .map_err(|e| FederateError::Network(e.to_string()))?
-            .to_vec())
+        read_capped(resp, max).await
     }
 
     pub async fn fetch_root(&self) -> Result<RootZone> {
-        let bytes = self.get_bytes("/v1/root").await?;
+        let bytes = self.get_bytes("/v1/root", MAX_ROOT_BYTES).await?;
         let zone: RootZone = serde_json::from_slice(&bytes)?;
         zone.validate()?;
         Ok(zone)
@@ -76,7 +111,9 @@ impl NodeClient {
         if !federate_storage::is_valid_hash(hash) {
             return Err(FederateError::BlockNotFound(hash.to_string()));
         }
-        let bytes = self.get_bytes(&format!("/v1/manifest/{hash}")).await?;
+        let bytes = self
+            .get_bytes(&format!("/v1/manifest/{hash}"), MAX_MANIFEST_BYTES)
+            .await?;
         federate_storage::verify(&bytes, hash)?;
         Ok(bytes)
     }
@@ -93,12 +130,14 @@ impl NodeClient {
         if !federate_storage::is_valid_hash(hash) {
             return Err(FederateError::BlockNotFound(hash.to_string()));
         }
-        let bytes = self.get_bytes(&format!("/v1/block/{hash}")).await?;
+        let bytes = self
+            .get_bytes(&format!("/v1/block/{hash}"), MAX_BLOCK_BYTES)
+            .await?;
         federate_storage::verify(&bytes, hash)?;
         Ok(bytes)
     }
 
     pub async fn health(&self) -> Result<bool> {
-        Ok(self.get_bytes("/health").await.is_ok())
+        Ok(self.get_bytes("/health", 4096).await.is_ok())
     }
 }

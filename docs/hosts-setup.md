@@ -1,5 +1,7 @@
 # Hosts-file Setup (MVP)
 
+> [Versão em português (pt-BR)](pt-BR/hosts-setup.md)
+
 Until the local DNS resolver ships (phase 3), map Federate domains to the
 local daemon by hand.
 
@@ -23,4 +25,4 @@ ping -c1 home.fed        # should hit 127.0.0.1
 federate doctor          # checks hosts file among other things
 ```
 
-Then, with `federated` running on port 80, open **http://home.fed** — no port.
+Then, with `federated` running on port 80, open **http://home.fed**, no port.

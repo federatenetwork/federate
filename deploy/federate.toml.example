@@ -1,4 +1,4 @@
-# Example Federate node config — copy to federate.toml and edit.
+# Example Federate node config: copy to federate.toml and edit.
 # Run with: federate-noded --config federate.toml
 # Roles: root-mirror, dns, gateway, storage, cdn, search, bootstrap, origin
 # (root-authority is reserved for the official Federate root.)
@@ -12,7 +12,7 @@ public_ip = "x.x.x.x"
 
 [network]
 bootstrap = "https://federate.network"
-# Pin the Federate Root public key (hex) — strongly recommended:
+# Pin the Federate Root public key (hex); strongly recommended:
 root_key = "..."
 # directory = "https://federate.network"
 # upstream_dns = "1.1.1.1:53"

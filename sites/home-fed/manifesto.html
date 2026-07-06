@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Manifesto - Federate Network</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/fed-md.js" defer></script>
+</head>
+<body>
+<main class="manifesto-page">
+
+<header class="manifesto-top">
+  <a href="/" class="back-home">← home.fed</a>
+  <select id="lang-select" class="lang-select" aria-label="Idioma / Language">
+    <option value="pt" lang="pt-BR">Português</option>
+    <option value="en" lang="en-US">English</option>
+  </select>
+</header>
+
+<article class="md manifesto" id="manifesto-body" lang="pt-BR" aria-live="polite">
+  <noscript>
+    <p lang="pt-BR">Este manifesto é escrito em markdown e renderizado no navegador.
+    Sem JavaScript, leia direto na fonte: <a href="/manifesto.pt.md">manifesto.pt.md</a>.</p>
+    <p lang="en-US">This manifesto is written in markdown and rendered in your browser.
+    Without JavaScript, read the source: <a href="/manifesto.en.md">manifesto.en.md</a>.</p>
+  </noscript>
+</article>
+
+<footer>
+  <span class="only-pt" lang="pt-BR">Servido pela Federate Network: endereçado por conteúdo, verificado por hash, humano.</span>
+  <span class="only-en" lang="en-US">Served through the Federate Network: content-addressed, hash-verified, human.</span>
+</footer>
+
+<script>
+(function () {
+  function init() {
+    var body = document.getElementById('manifesto-body');
+    var select = document.getElementById('lang-select');
+
+    function apply(lang) {
+      var isPt = lang === 'pt';
+      select.value = lang;
+      body.setAttribute('lang', isPt ? 'pt-BR' : 'en-US');
+      document.documentElement.lang = isPt ? 'pt-BR' : 'en-US';
+      window.fedMD.mount(body, isPt ? '/manifesto.pt.md' : '/manifesto.en.md');
+      try { localStorage.setItem('federate-lang', lang); } catch (e) {}
+    }
+
+    select.addEventListener('change', function () { apply(select.value); });
+
+    var saved = null;
+    try { saved = localStorage.getItem('federate-lang'); } catch (e) {}
+    if (saved !== 'pt' && saved !== 'en') {
+      saved = (navigator.language || 'pt').toLowerCase().indexOf('pt') === 0 ? 'pt' : 'en';
+    }
+    apply(saved);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+</main>
+</body>
+</html>

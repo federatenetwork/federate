@@ -3,53 +3,70 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>home.fed — Federate Network</title>
+<title>home.fed - Federate Network</title>
 <link rel="stylesheet" href="/style.css">
+<script src="/fed-md.js" defer></script>
 </head>
 <body>
 <main>
-<div style="text-align:center;margin:2rem 0">
+<header class="home-top">
+  <select id="lang-select" class="lang-select" aria-label="Idioma / Language">
+    <option value="pt" lang="pt-BR">Português</option>
+    <option value="en" lang="en-US">English</option>
+  </select>
+</header>
+
+<div class="site-mark">
   <img src="/logo.svg" alt="Federate Network" style="max-width:20rem;width:100%;height:auto">
-  <h1 style="position:absolute;left:-9999px">Federate Network</h1>
-  <p><em>A human web, built by people.</em></p>
-  <p><strong>No feeds. No scraping. No AI training by default.</strong></p>
+  <h1 class="visually-hidden">Federate Network</h1>
 </div>
 
-<h2>Manifesto</h2>
-<p>Federate Network is a human web protocol. It is not an AI-training platform, an ad network,
-an engagement-farming social feed, a surveillance platform, or a content scraping machine.</p>
-<p>It exists to make the web human again: human authorship, personal websites, small communities,
-creative spaces, public knowledge, ownership, portability, participant-operated infrastructure,
-content preservation, local-first identity — a slower, more intentional web.</p>
-<p>Your content is not used for AI training by default. The network is designed around people
-creating spaces, not platforms extracting attention.</p>
+<article class="md md-home" id="home-body" aria-live="polite">
+  <noscript>
+    <p lang="en-US">This page is written in markdown and rendered in your browser.
+    JavaScript is off; read the source directly: <a href="/index.en.md">index.en.md</a>.</p>
+    <p lang="pt-BR">Esta página é escrita em markdown e renderizada no navegador.
+    Sem JavaScript, leia direto na fonte: <a href="/index.pt.md">index.pt.md</a>.</p>
+  </noscript>
+</article>
 
-<h2>The namespaces</h2>
-<ul>
-  <li><span class="tag">.fed</span> official Federate namespace — specs, registry, status, governance</li>
-  <li><span class="tag">.pagina</span> personal sites, blogs, portfolios, essays</li>
-  <li><span class="tag">.rosa</span> creative, visual, poetic, art-oriented spaces</li>
-  <li><span class="tag">.cara</span> identity, profiles, people pages, public cards</li>
-  <li><span class="tag">.mosca</span> weird internet — experiments, memes, small games, underground pages</li>
-  <li><span class="tag">.tipos</span> / <span class="tag">.types</span> typography, type design, lettering, fonts</li>
-</ul>
-<p>Federate controls the root; TLDs can be delegated to operators who issue domains inside them.
-Every record is signed — root key, TLD operator key, domain owner key — down to hash-verified
-content blocks.</p>
+<footer>
+  <span class="only-pt" lang="pt-BR">Servido pela Federate Network: endereçado por conteúdo, verificado por hash, humano.</span>
+  <span class="only-en" lang="en-US">Served through the Federate Network: content-addressed, hash-verified, human.</span><br>
+  domain → root zone → TLD → domain record → manifest → content blocks → your browser.
+</footer>
 
-<h2>Search</h2>
-<p><input type="search" placeholder="search the federate network… (coming soon)" disabled style="width:100%;padding:.6rem;border:1px solid #e4dccd;border-radius:8px;font:inherit"></p>
+<script>
+(function () {
+  function init() {
+    var body = document.getElementById('home-body');
+    var select = document.getElementById('lang-select');
 
-<h2>Participate</h2>
-<ul>
-  <li><strong>Publish</strong> — <code>federate deploy ./dist --domain you.pagina</code> (coming in phase 2)</li>
-  <li><strong>Claim a TLD</strong> — <code>federate tld check yourname</code>, applications open in a future phase</li>
-  <li><strong>Become a node</strong> — host and replicate content for the network (phase 4)</li>
-  <li><strong>Explore</strong> — more sites arriving on this network soon</li>
-</ul>
+    function apply(lang) {
+      var isPt = lang === 'pt';
+      select.value = lang;
+      body.setAttribute('lang', isPt ? 'pt-BR' : 'en-US');
+      document.documentElement.lang = isPt ? 'pt-BR' : 'en-US';
+      window.fedMD.mount(body, isPt ? '/index.pt.md' : '/index.en.md');
+      try { localStorage.setItem('federate-lang', lang); } catch (e) {}
+    }
 
-<footer>Served through the Federate Network — content-addressed, hash-verified, human.<br>
-domain → root zone → signed TLD record → signed domain record → signed manifest → content blocks → your browser.</footer>
+    select.addEventListener('change', function () { apply(select.value); });
+
+    var saved = null;
+    try { saved = localStorage.getItem('federate-lang'); } catch (e) {}
+    if (saved !== 'pt' && saved !== 'en') {
+      saved = (navigator.language || 'pt').toLowerCase().indexOf('pt') === 0 ? 'pt' : 'en';
+    }
+    apply(saved);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
 </main>
 </body>
 </html>

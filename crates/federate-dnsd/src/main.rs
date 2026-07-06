@@ -1,9 +1,9 @@
-//! federate-dnsd — a Federate DNS node anyone can run.
+//! federate-dnsd: a Federate DNS node anyone can run.
 //!
 //! Answers Federate TLDs with multiple healthy gateway IPs from the node
 //! directory (low TTL, never one hardcoded IP) and forwards everything else
 //! to upstream DNS. Verifies the root zone signature before trusting any
-//! TLD data — including data served by root mirrors.
+//! TLD data, including data served by root mirrors.
 
 use clap::Parser;
 use federate_client::NodeClient;
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     match resolver.refresh_root().await {
         Ok(zone) => tracing::info!(
-            "verified root zone v{} — {} TLDs",
+            "verified root zone v{}: {} TLDs",
             zone.root_version,
             zone.tlds.len()
         ),

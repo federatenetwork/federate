@@ -1,11 +1,13 @@
 # Node directory
 
+> [Versão em português (pt-BR)](pt-BR/node-directory.md)
+
 The node directory tracks live Federate infrastructure nodes. Node 1 hosts
 the official directory; `federate-directory` is a library, so other directory
 deployments are possible later.
 
 The directory is **infrastructure discovery only**. It never decides what
-names or content are valid — that authority stays with the signed root zone.
+names or content are valid; that authority stays with the signed root zone.
 
 ## What it tracks per node
 
@@ -35,8 +37,20 @@ Nodes re-register every 60 seconds.
 The directory polls each node's `{health_endpoint}/health` every 15 seconds:
 
 - 200 → **online** (latency recorded)
-- 1–2 consecutive failures → **degraded**
+- 1-2 consecutive failures → **degraded**
 - 3+ → **offline** (excluded from healthy listings and DNS answers)
+
+## Stale nodes, limits, persistence
+
+- Nodes not seen for **24 hours** (no successful health check, no
+  re-registration) are removed entirely, including their block-provider
+  entries. They can always re-register.
+- The directory tracks at most **5000 nodes**; further new registrations are
+  rejected (refreshes of known nodes always succeed). Registrations are
+  self-signed, so the cap bounds memory against mass fake registrations.
+- Node 1 persists the node table to `data/directory-nodes.json`
+  (write-then-rename). On restart every snapshot entry is re-verified -
+  a tampered snapshot cannot inject unverifiable registrations.
 
 ## API
 

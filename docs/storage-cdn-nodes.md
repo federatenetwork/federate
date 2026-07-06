@@ -1,14 +1,16 @@
 # Storage and CDN nodes
 
+> [Versão em português (pt-BR)](pt-BR/storage-cdn-nodes.md)
+
 Storage and CDN nodes hold content-addressed blocks and serve them to
-gateways. They are **never returned to browsers by DNS** — browsers talk to
+gateways. They are **never returned to browsers by DNS**; browsers talk to
 gateways; gateways fetch blocks from providers.
 
 ## Roles
 
-- `storage` — durably stores blocks it has been given and serves them at
+- `storage` - durably stores blocks it has been given and serves them at
   `GET /v1/block/:hash`.
-- `cdn` — same API, but fetch-on-miss: a requested block it doesn't have is
+- `cdn` - same API, but fetch-on-miss: a requested block it doesn't have is
   pulled (hash-verified) from other providers or Node 1, cached, and served.
   The cache is LRU-evicted and capped by `[capacity] storage_gb`.
 
@@ -26,7 +28,7 @@ Providers are never trusted:
 ## Provider selection
 
 Gateways rank providers: online before degraded, same region first, then
-lowest latency — and fail over down the list, ending at Node 1 (origin of
+lowest latency, and fail over down the list, ending at Node 1 (origin of
 official content).
 
 ## Run one

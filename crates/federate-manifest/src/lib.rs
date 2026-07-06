@@ -1,4 +1,4 @@
-//! federate-manifest — manifest types, validation, signatures, path mapping.
+//! federate-manifest: manifest types, validation, signatures, path mapping.
 //!
 //! A manifest is signed by the domain owner key named in the domain record.
 //! The manifest bytes themselves are content-addressed (the domain record's
@@ -72,9 +72,11 @@ impl Manifest {
         Ok(())
     }
 
-    /// Map an HTTP path to a content hash. "/" maps to the entry file;
-    /// "/foo/" tries "foo/index.html".
-    pub fn resolve_path(&self, path: &str) -> Option<&str> {
+    /// Map an HTTP path to `(manifest file path, content hash)`. "/" maps to
+    /// the entry file; "/foo/" tries "foo/index.html". Returning the matched
+    /// file path (not just the hash) lets callers derive the MIME type from
+    /// the file actually served; two paths can share one hash.
+    pub fn resolve_path(&self, path: &str) -> Option<(String, &str)> {
         let trimmed = path.trim_start_matches('/');
         let candidates = if trimmed.is_empty() {
             vec![self.entry.clone()]
@@ -84,9 +86,8 @@ impl Manifest {
             vec![trimmed.to_string(), format!("{trimmed}/index.html")]
         };
         candidates
-            .iter()
-            .find_map(|c| self.files.get(c))
-            .map(|s| s.as_str())
+            .into_iter()
+            .find_map(|c| self.files.get(&c).map(|h| (c, h.as_str())))
     }
 }
 
@@ -124,5 +125,37 @@ mod tests {
         bad.files.insert("index.html".into(), "evil".into());
         assert!(bad.verify("home.fed", &owner.node_id()).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_path_mapping() {
+        let m = Manifest {
+            domain: "home.fed".into(),
+            version: 1,
+            entry: "index.html".into(),
+            files: BTreeMap::from([
+                ("index.html".to_string(), "h1".to_string()),
+                ("blog/index.html".to_string(), "h2".to_string()),
+                ("style.css".to_string(), "h3".to_string()),
+            ]),
+            owner_public_key: "pk".into(),
+            created_at: "t".into(),
+            signature_algorithm: "ed25519".into(),
+            signature: None,
+        };
+        assert_eq!(m.resolve_path("/"), Some(("index.html".to_string(), "h1")));
+        assert_eq!(
+            m.resolve_path("/blog/"),
+            Some(("blog/index.html".to_string(), "h2"))
+        );
+        assert_eq!(
+            m.resolve_path("/blog"),
+            Some(("blog/index.html".to_string(), "h2"))
+        );
+        assert_eq!(m.resolve_path("/style.css").unwrap().1, "h3");
+        assert!(m.resolve_path("/missing").is_none());
+        // traversal-looking paths are plain map keys, never filesystem paths
+        assert!(m.resolve_path("/../../etc/passwd").is_none());
+        assert!(m.resolve_path("/..%2f..%2findex.html").is_none());
     }
 }

@@ -1,5 +1,7 @@
 # Troubleshooting
 
+> [Versão em português (pt-BR)](pt-BR/troubleshooting.md)
+
 First step, always:
 
 ```sh
@@ -49,5 +51,5 @@ zone (new manifest hash). Restart `federated` to force a root refresh, or
 
 ## Normal websites broken?
 
-The MVP touches nothing global — only the hosts-file lines you added and
+The MVP touches nothing global; only the hosts-file lines you added and
 `127.0.0.1:80`. Remove the hosts lines to fully undo.

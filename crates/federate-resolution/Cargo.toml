@@ -17,3 +17,8 @@ mime_guess = { workspace = true }
 tracing = { workspace = true }
 federate-directory = { workspace = true }
 federate-cdn = { workspace = true }
+
+[dev-dependencies]
+federate-identity = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }

@@ -1,7 +1,7 @@
-//! federate — CLI for the Federate Network.
+//! federate: CLI for the Federate Network.
 //!
 //! Registry/verification commands talk to Node 1 (bootstrap URL) and verify
-//! signatures locally — the server is a distributor of signed data, not a
+//! signatures locally; the server is a distributor of signed data, not a
 //! trusted authority. Daemon commands talk to the local daemon API.
 
 use clap::{Parser, Subcommand};
@@ -108,7 +108,7 @@ enum TldCmd {
     Check { tld: String },
     /// Show the full record for a TLD
     Whois { tld: String },
-    /// Apply for a new TLD (marketplace phase 2 — validates only, for now)
+    /// Apply for a new TLD (marketplace phase 2; validates only for now)
     Apply { tld: String },
     /// Approve a pending TLD (admin/seed-data-only in this phase)
     Approve {
@@ -145,7 +145,7 @@ enum DomainCmd {
     Check { domain: String },
     /// Show the full record for a domain
     Whois { domain: String },
-    /// Register a domain (marketplace phase — validates only, for now)
+    /// Register a domain (marketplace phase; validates only for now)
     Register { domain: String },
     /// Verify a domain record's signature chain
     Verify { domain: String },
@@ -367,7 +367,7 @@ async fn main() {
             cmd: DirectoryCmd::List { role, healthy },
         } => directory_list(&cli, role, healthy).await,
         Cmd::Open { domain } => {
-            // Portless URL — this is the whole point.
+            // Portless URL: this is the whole point.
             let url = format!("http://{domain}");
             println!("opening {url}");
             #[cfg(target_os = "macos")]
@@ -463,7 +463,7 @@ async fn tld_cmd(cli: &Ctx, cmd: TldCmd) {
                 Ok(v) => {
                     let available = v["available"].as_bool().unwrap_or(false);
                     println!(
-                        "[{}] .{} — {}",
+                        "[{}] .{} - {}",
                         if available {
                             "available"
                         } else {
@@ -504,7 +504,7 @@ async fn tld_cmd(cli: &Ctx, cmd: TldCmd) {
                         v["tld"].as_str().unwrap_or(&tld)
                     );
                     println!("TLD applications are not open yet (marketplace phase 2).");
-                    println!("See docs/tld-marketplace-roadmap.md — no payments are implemented.");
+                    println!("See docs/tld-marketplace-roadmap.md; no payments are implemented.");
                 }
                 Ok(v) => die(&format!(
                     "cannot apply for .{}: {}",
@@ -569,7 +569,7 @@ async fn domain_cmd(cli: &Ctx, cmd: DomainCmd) {
             match zone.tlds.get(&parsed.tld) {
                 None => die(&format!(".{} does not exist in the Federate root registry", parsed.tld)),
                 Some(t) if !t.status.is_resolvable() => die(&format!(
-                    ".{} exists but is {} — domains cannot be registered under it",
+                    ".{} exists but is {}, so domains cannot be registered under it",
                     parsed.tld,
                     t.status.as_str()
                 )),
@@ -776,7 +776,7 @@ async fn node_cmd(cli: &Ctx, cmd: NodeCmd) {
                 Ok(s) if s.success() => {}
                 Ok(s) => die(&format!("federate-noded exited with {s}")),
                 Err(e) => die(&format!(
-                    "cannot spawn federate-noded ({e}) — build/install it first: cargo install --path crates/federate-noded"
+                    "cannot spawn federate-noded ({e}); build/install it first: cargo install --path crates/federate-noded"
                 )),
             }
         }
@@ -889,7 +889,7 @@ async fn directory_list(cli: &Ctx, role: Option<federate_directory::NodeRole>, h
 
 fn port_check() {
     match std::net::TcpListener::bind("127.0.0.1:80") {
-        Ok(_) => println!("ok: port 80 can be bound — federated will work portless"),
+        Ok(_) => println!("ok: port 80 can be bound; federated will work portless"),
         Err(e) => {
             println!("cannot bind 127.0.0.1:80: {e}");
             println!("if federated is already running, this is expected.");
@@ -917,7 +917,7 @@ async fn doctor(cli: &Ctx) {
             } else {
                 problems += 1;
                 println!(
-                    "[!!] Node 1 not reachable ({}) — cached sites still work",
+                    "[!!] Node 1 not reachable ({}); cached sites still work",
                     v["bootstrap"]
                 );
             }
@@ -928,7 +928,7 @@ async fn doctor(cli: &Ctx) {
                 ),
                 None => {
                     problems += 1;
-                    println!("[!!] no verified root zone — daemon never reached Node 1 or verification failed");
+                    println!("[!!] no verified root zone; the daemon never reached Node 1 or verification failed");
                 }
             }
             match v["trusted_root_key"].as_str() {
@@ -952,7 +952,9 @@ async fn doctor(cli: &Ctx) {
         Ok(_) => {
             if daemon.is_ok() {
                 problems += 1;
-                println!("[!!] port 80 is free but daemon is up — gateway is NOT on port 80");
+                println!(
+                    "[!!] port 80 is free but the daemon is up; the gateway is NOT on port 80"
+                );
                 println!("     portless URLs like http://home.fed will not work; see docs/port-80-setup.md");
             } else {
                 println!("[ok] port 80 available for federated");
@@ -1024,7 +1026,7 @@ async fn doctor(cli: &Ctx) {
 
     println!();
     if problems == 0 {
-        println!("all checks passed — open http://home.fed");
+        println!("all checks passed. Open http://home.fed");
     } else {
         println!("{problems} problem(s) found. See docs/troubleshooting.md");
         std::process::exit(1);

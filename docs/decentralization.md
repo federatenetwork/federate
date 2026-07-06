@@ -1,5 +1,7 @@
 # Decentralization model
 
+> [Versão em português (pt-BR)](pt-BR/decentralization.md)
+
 Federate Network separates **authority** from **infrastructure**.
 
 ## Core principle
@@ -8,8 +10,8 @@ Federate Network separates **authority** from **infrastructure**.
 > Federate nodes distribute, resolve, cache, mirror, search, and serve valid data.
 
 `federate.network` (Node 1) remains the official root authority for TLDs.
-Everything else — DNS, gateways, storage, CDN, search, bootstrap, root
-mirroring — can be run by anyone.
+Everything else (DNS, gateways, storage, CDN, search, bootstrap, root
+mirroring) can be run by anyone.
 
 ## What is decentralized today
 
@@ -37,7 +39,7 @@ TLD authority. The Federate Root Key alone controls and signs:
 
 Why: a namespace needs a single, consistent, abuse-resistant source of truth
 before it can be safely federated further. Because every TLD record is
-*signed* by the root key, no node — mirror, DNS, gateway, or Node 1 itself —
+*signed* by the root key, no node (mirror, DNS, gateway, or Node 1 itself)
 can forge or alter TLD data without detection. Decentralizing the transport
 first, and governance later, keeps the network honest at every step.
 
@@ -60,7 +62,7 @@ Rules enforced everywhere in code:
 - all manifests must be signed by the Domain Owner Key
 - all blocks must be verified by hash
 - all node registrations must be signed by the node key
-- nodes are never trusted blindly — verification happens at the consumer
+- nodes are never trusted blindly - verification happens at the consumer
 
 ## How data flows
 
@@ -79,7 +81,7 @@ signatures, blocks, and replicas.
 
 See:
 
-- [nodes.md](nodes.md) — node roles, registration, config
+- [nodes.md](nodes.md) - node roles, registration, config
 - [dns-nodes.md](dns-nodes.md)
 - [gateway-nodes.md](gateway-nodes.md)
 - [storage-cdn-nodes.md](storage-cdn-nodes.md)

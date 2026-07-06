@@ -1,7 +1,9 @@
 # Root mirrors
 
+> [Versão em português (pt-BR)](pt-BR/root-mirrors.md)
+
 A root mirror distributes signed root zone copies so the network does not
-depend on one VPS. Mirrors **cannot create or modify TLDs** — and the crypto
+depend on one VPS. Mirrors **cannot create or modify TLDs**, and the crypto
 makes cheating pointless.
 
 ## How it works
@@ -14,7 +16,7 @@ makes cheating pointless.
 ## Why mirrors can't cheat
 
 Every consumer (daemon, DNS node, gateway, CLI) verifies the root zone
-signature against its own pinned root key **before trusting any data** —
+signature against its own pinned root key **before trusting any data** -
 regardless of where the bytes came from. A mirror that alters a TLD record,
 adds a domain, or unblocks a blocked TLD produces a zone that fails
 verification and is rejected by every client.

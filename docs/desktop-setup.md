@@ -1,4 +1,6 @@
-# Desktop Setup — How a Friend Joins
+# Desktop Setup: How a Friend Joins
+
+> [Versão em português (pt-BR)](pt-BR/desktop-setup.md)
 
 Goal: type `http://home.fed` in Chrome/Safari/Firefox/Edge and enter the
 Federate Network.
@@ -22,7 +24,7 @@ federated --bootstrap https://federate.network
 
 ## 3. Add hosts-file mappings
 
-Follow [hosts-setup.md](hosts-setup.md) — append `deploy/hosts-federate.txt`
+Follow [hosts-setup.md](hosts-setup.md); append `deploy/hosts-federate.txt`
 to your hosts file.
 
 ## 4. Allow the daemon to bind port 80
@@ -41,7 +43,7 @@ You should see: identity loaded, root zone fetched from Node 1, gateway on
 
 ## 6. Open the Federate Network
 
-Open **http://home.fed** in any normal browser — portless. More sites will
+Open **http://home.fed** in any normal browser, portless. More sites will
 appear on the network as publishing opens up.
 
 ## Check-up

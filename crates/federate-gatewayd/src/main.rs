@@ -1,4 +1,4 @@
-//! federate-gatewayd — a public Federate gateway node anyone can run.
+//! federate-gatewayd: a public Federate gateway node anyone can run.
 //!
 //! Browsers reach this node via Federate DNS; it resolves Host headers
 //! through the shared verification chain (root → TLD → domain → manifest →

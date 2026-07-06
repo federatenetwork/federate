@@ -1,4 +1,4 @@
-//! federate-storage — content-addressed blocks, hashing, local cache.
+//! federate-storage: content-addressed blocks, hashing, local cache.
 
 use federate_core::{FederateError, Result};
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
 
 /// Is this string a syntactically valid content address (64 lowercase hex
 /// chars)? Any hash that reaches the filesystem or a fetch URL comes from
-/// untrusted input (HTTP path params, manifests) and MUST pass this first —
+/// untrusted input (HTTP path params, manifests) and MUST pass this first -
 /// it blocks path traversal (`../`), absolute paths, and multi-byte slicing
 /// panics before the value is ever used to build a path.
 pub fn is_valid_hash(hash: &str) -> bool {

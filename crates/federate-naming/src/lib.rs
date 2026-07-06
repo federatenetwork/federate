@@ -1,4 +1,4 @@
-//! federate-naming — domain/TLD parsing, naming rules, record types and
+//! federate-naming: domain/TLD parsing, naming rules, record types and
 //! statuses for the Federate TLD hierarchy:
 //!
 //! Federate Root Registry → TLD Operator → Domain Registrant → Site/Manifest Owner
@@ -84,9 +84,9 @@ pub enum TldMode {
 pub enum RegistryType {
     /// Domains live in the Federate root zone itself (MVP for official TLDs).
     RootManaged,
-    /// Registry published as a signed manifest (placeholder — phase 6).
+    /// Registry published as a signed manifest (placeholder, phase 6).
     DelegatedManifest,
-    /// Registry served by an operator HTTP endpoint (placeholder — phase 6).
+    /// Registry served by an operator HTTP endpoint (placeholder, phase 6).
     DelegatedHttp,
     /// Registry served by a Federate node (future).
     DelegatedNode,
@@ -137,11 +137,33 @@ pub enum TargetType {
 }
 
 // ---------------------------------------------------------------------------
+// Expiration
+// ---------------------------------------------------------------------------
+
+/// Whether a record's `expires_at` (RFC 3339) has passed at `now`.
+/// Fail closed: an unparseable timestamp counts as expired; a signed record
+/// with a corrupt expiry must never keep resolving forever.
+pub fn expired_at(expires_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    match expires_at {
+        None => false,
+        Some(ts) => match chrono::DateTime::parse_from_rfc3339(ts) {
+            Ok(t) => t <= now,
+            Err(_) => true,
+        },
+    }
+}
+
+/// `expired_at` against the current wall clock.
+pub fn expired(expires_at: Option<&str>) -> bool {
+    expired_at(expires_at, chrono::Utc::now())
+}
+
+// ---------------------------------------------------------------------------
 // Naming rules
 // ---------------------------------------------------------------------------
 
 /// Normalize + validate a TLD name.
-/// MVP rules: lowercase ASCII a-z only, length 2–32, no hyphen/dot/whitespace,
+/// MVP rules: lowercase ASCII a-z only, length 2-32, no hyphen/dot/whitespace,
 /// no punycode. Blocklist checks live in federate-root (they need the lists).
 pub fn validate_tld_name(input: &str) -> Result<String> {
     let tld = input.trim().trim_start_matches('.').to_ascii_lowercase();
@@ -152,7 +174,7 @@ pub fn validate_tld_name(input: &str) -> Result<String> {
         })
     };
     if tld.len() < 2 || tld.len() > 32 {
-        return reject("length must be 2–32 characters");
+        return reject("length must be 2-32 characters");
     }
     if !tld.chars().all(|c| c.is_ascii_lowercase()) {
         return reject(
@@ -163,7 +185,7 @@ pub fn validate_tld_name(input: &str) -> Result<String> {
 }
 
 /// Validate a domain label (the part before the TLD).
-/// MVP rules: a-z, 0-9, hyphen; length 1–63; no leading/trailing hyphen.
+/// MVP rules: a-z, 0-9, hyphen; length 1-63; no leading/trailing hyphen.
 pub fn validate_label(input: &str) -> Result<String> {
     let label = input.trim().to_ascii_lowercase();
     let reject = |reason: &str| {
@@ -172,7 +194,7 @@ pub fn validate_label(input: &str) -> Result<String> {
         )))
     };
     if label.is_empty() || label.len() > 63 {
-        return reject("length must be 1–63 characters");
+        return reject("length must be 1-63 characters");
     }
     if !label
         .chars()
@@ -187,7 +209,7 @@ pub fn validate_label(input: &str) -> Result<String> {
 }
 
 /// A parsed Federate domain: exactly one label plus one TLD (`joao.pagina`).
-/// Subdomains are future work. Parsing is purely syntactic — whether the TLD
+/// Subdomains are future work. Parsing is purely syntactic; whether the TLD
 /// actually exists/resolves is decided against the signed root zone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FederateDomain {
@@ -231,7 +253,7 @@ impl std::fmt::Display for FederateDomain {
 // ---------------------------------------------------------------------------
 
 /// A domain record inside a TLD registry. Domains resolve to identities
-/// (manifest hash, future service/node ids) — never directly to public IPs.
+/// (manifest hash, future service/node ids), never directly to public IPs.
 ///
 /// Signed by the TLD operator key (`operator_public_key` in the TldRecord).
 /// The signature covers the canonical JSON with `signature: null`.
@@ -259,7 +281,7 @@ pub struct DomainRecord {
     /// Renewal metadata placeholder (future).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renewal: Option<serde_json::Value>,
-    /// Pricing metadata placeholder (future marketplace — no payments yet).
+    /// Pricing metadata placeholder (future marketplace; no payments yet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<serde_json::Value>,
     pub signature_algorithm: String,
@@ -269,6 +291,12 @@ pub struct DomainRecord {
 }
 
 impl DomainRecord {
+    /// Whether this record's lease has expired (status alone is not enough:
+    /// an old signed record stays valid crypto-wise after its expiry passes).
+    pub fn is_expired(&self) -> bool {
+        expired(self.expires_at.as_deref())
+    }
+
     /// Bytes covered by the signature: canonical JSON with signature = None.
     pub fn signable_bytes(&self) -> Result<Vec<u8>> {
         let mut unsigned = self.clone();
@@ -338,6 +366,22 @@ mod tests {
         assert!(FederateDomain::parse("eu.femboy").is_ok()); // syntax OK, existence decided by root zone
         assert!(FederateDomain::parse("a.b.fed").is_err()); // subdomain
         assert!(FederateDomain::parse("fed").is_err());
+    }
+
+    #[test]
+    fn expiry_rules() {
+        let now = chrono::Utc::now();
+        // no expiry -> never expires
+        assert!(!expired_at(None, now));
+        // future -> not expired
+        let future = (now + chrono::Duration::days(30)).to_rfc3339();
+        assert!(!expired_at(Some(&future), now));
+        // past -> expired
+        let past = (now - chrono::Duration::days(1)).to_rfc3339();
+        assert!(expired_at(Some(&past), now));
+        // garbage timestamp -> fail closed (expired)
+        assert!(expired_at(Some("not a date"), now));
+        assert!(expired_at(Some(""), now));
     }
 
     #[test]

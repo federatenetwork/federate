@@ -229,4 +229,42 @@ mod tests {
         assert_eq!(rcode, 2);
         assert!(answers.is_empty());
     }
+
+    #[test]
+    fn malformed_packets_rejected_not_panic() {
+        // empty / short / garbage packets must parse to Err, never panic
+        assert!(DnsQuery::parse(&[]).is_err());
+        assert!(DnsQuery::parse(&[0u8; 5]).is_err());
+        assert!(DnsQuery::parse(&[0xFF; 12]).is_err()); // QR=1 (a response)
+                                                        // header claims a question but the name is truncated
+        let mut p = vec![0u8; 12];
+        p[5] = 1; // QDCOUNT = 1
+        p.push(63); // label length 63 with no label bytes
+        assert!(DnsQuery::parse(&p).is_err());
+        // compressed question name rejected
+        let mut p = vec![0u8; 12];
+        p[5] = 1;
+        p.extend([0xC0, 0x0C]);
+        assert!(DnsQuery::parse(&p).is_err());
+        // zero questions rejected
+        let p = vec![0u8; 12];
+        assert!(DnsQuery::parse(&p).is_err());
+        // truncated garbage answers must not panic either
+        assert!(parse_answers(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn response_with_answer_cap_fits_udp() {
+        let packet = build_query(1, "home.fed", 1);
+        let query = DnsQuery::parse(&packet).unwrap();
+        let ips: Vec<IpAddr> = (0..crate::MAX_ANSWERS)
+            .map(|i| format!("45.0.0.{}", i + 1).parse().unwrap())
+            .collect();
+        let response = build_response(&packet, &query, &ips, 30);
+        assert!(
+            response.len() <= 512,
+            "capped response must fit plain UDP ({} bytes)",
+            response.len()
+        );
+    }
 }

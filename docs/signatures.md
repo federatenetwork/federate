@@ -1,9 +1,11 @@
 # Signatures & Chain of Trust
 
+> [Versão em português (pt-BR)](pt-BR/signatures.md)
+
 ## Keys in one paragraph
 
 A keypair has a **private key** (secret, proves ownership by producing
-signatures) and a **public key** (a public identifier, safe to publish —
+signatures) and a **public key** (a public identifier, safe to publish -
 knowing it lets anyone *verify* signatures but never *create* them). In
 Federate, public keys ARE the identity layer: TLD owners, TLD operators, and
 domain owners are all public keys. Ownership of anything is proven by a
@@ -20,7 +22,7 @@ Federate Root Key
 ```
 
 Node 1 is a **distributor of signed data, not a trusted authority**. The
-daemon trusts valid signatures and content hashes — never server responses.
+daemon trusts valid signatures and content hashes, never server responses.
 A compromised or impersonated Node 1 cannot forge any record without the
 corresponding private keys; the daemon rejects the data and keeps serving the
 last verified cached zone.
@@ -82,17 +84,27 @@ Every signed object carries: the payload fields, `signature`,
 
 ## Replay protection
 
-MVP: timestamps (`created_at`/`updated_at`) and version numbers
-(`root_version`, record `version`) let clients prefer newer data and detect
-stale substitution. Future mutation APIs (registering/updating TLDs and
-domains at runtime) MUST additionally use server-issued nonces or
-challenge-response so a captured signed request cannot be replayed.
+Enforced, not advisory:
+
+- **Root zone rollback**: daemons remember the `root_version` of the last
+  verified zone (memory + disk cache) and reject a correctly signed but
+  *older* zone from any node or mirror. Node 1 derives `root_version` from
+  the clock at signing time, so it is monotonic across restarts.
+- **Record expiry**: `expires_at` (RFC 3339) on TLD and domain records is
+  checked at every resolution (gateway, DNS, registry view, delegated
+  fetch). An expired record stops resolving even though its signature is
+  still cryptographically valid; an unparseable `expires_at` counts as
+  expired (fail closed).
+
+Future mutation APIs (registering/updating TLDs and domains at runtime) MUST
+additionally use server-issued nonces or challenge-response so a captured
+signed request cannot be replayed.
 
 ## When verification fails
 
 The daemon serves a styled **Federate security error page** stating which
 layer failed (root / tld / domain / manifest / content), for which domain,
-and why — and does not serve the content. `federate doctor`,
+and why, and does not serve the content. `federate doctor`,
 `federate root verify`, `federate tld verify <tld>`, `federate domain verify
 <domain>`, and `federate manifest verify <domain>` reproduce each check from
 the command line.

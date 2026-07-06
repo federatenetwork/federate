@@ -1,5 +1,7 @@
 # DNS nodes
 
+> [Versão em português (pt-BR)](pt-BR/dns-nodes.md)
+
 `federate-dnsd` is an authoritative DNS server for Federate TLDs. Anyone can
 run one.
 
@@ -8,9 +10,9 @@ run one.
 For a query like `home.fed`:
 
 1. Confirm `.fed` exists in the **signed root zone** (signature verified
-   against the pinned Federate Root Key — an unverifiable zone is never used).
+   against the pinned Federate Root Key; an unverifiable zone is never used).
 2. Ask the node directory for **healthy gateway nodes**.
-3. Return **multiple** A/AAAA records — never one hardcoded IP:
+3. Return **multiple** A/AAAA records, never one hardcoded IP:
 
    ```
    home.fed  A  45.1.1.1
@@ -28,6 +30,19 @@ For a query like `home.fed`:
 
 If no healthy gateway exists, the server answers SERVFAIL rather than a stale
 or invented IP.
+
+Operational limits (current implementation):
+
+- Answers are capped at **8 records** so every response fits a plain
+  512-byte UDP reply.
+- **UDP only** for now - no TCP listener, no EDNS. Truncation never happens
+  because of the answer cap, but resolvers that insist on TCP retry will not
+  get an answer yet.
+- TLDs whose root-zone record is expired (`expires_at` in the past) are
+  treated as non-Federate and forwarded upstream like any other name.
+- Upstream forwarding uses a fresh connected socket per query (random source
+  port) and requires a matching DNS transaction ID, so off-path spoofed
+  answers are dropped.
 
 DNS only answers *where a name should go*. Gateways still verify the full
 root → TLD → domain → manifest → block chain before serving anything.

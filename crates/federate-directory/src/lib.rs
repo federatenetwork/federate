@@ -1,10 +1,10 @@
-//! federate-directory — the Federate Node Directory.
+//! federate-directory: the Federate Node Directory.
 //!
 //! Tracks live nodes (id, key, IPs, region, roles, health, latency, capacity,
 //! last_seen), verifies signed registrations, health-checks nodes, and
 //! answers "give me healthy gateways / DNS nodes / providers for block X".
 //!
-//! The directory is *infrastructure discovery only* — it never decides what
+//! The directory is *infrastructure discovery only*; it never decides what
 //! names or content are valid. That authority stays with the signed root zone.
 
 use federate_core::{FederateError, Result};
@@ -109,7 +109,7 @@ pub struct NodeCapacity {
 }
 
 /// A node's self-registration. Signed by the node's private key over
-/// canonical JSON with `signature: null` — the directory verifies the
+/// canonical JSON with `signature: null`; the directory verifies the
 /// signature and that `node_id == public_key` before accepting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeRegistration {
@@ -164,7 +164,7 @@ impl NodeRegistration {
         }
         // The health endpoint must be http(s) and point at one of this node's
         // own declared IPs. Otherwise a node could aim the directory's health
-        // checker and gateway block-fetches at an arbitrary host (SSRF) —
+        // checker and gateway block-fetches at an arbitrary host (SSRF) -
         // e.g. cloud metadata endpoints or someone else's server.
         let host = health_endpoint_host(&self.health_endpoint)
             .ok_or(())
@@ -194,7 +194,7 @@ impl NodeRegistration {
 
 /// A signed announcement that a node holds a set of content blocks. Signed by
 /// the node's key so a stranger cannot poison another node's provider list.
-/// Block hashes are still trust-but-verify — gateways re-hash every fetch.
+/// Block hashes are still trust-but-verify; gateways re-hash every fetch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAnnounce {
     pub node_id: String,
@@ -289,12 +289,23 @@ pub struct NodeEntry {
 // Directory
 // ---------------------------------------------------------------------------
 
+/// Hard cap on tracked nodes. Registrations are self-signed, so without a cap
+/// anyone could grow the directory's memory without bound.
+pub const MAX_NODES: usize = 5000;
+
+/// Nodes that neither re-registered nor answered a health check for this long
+/// are removed entirely (they can always re-register).
+pub const STALE_NODE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 pub struct Directory {
     nodes: RwLock<HashMap<String, NodeEntry>>,
     /// block hash -> node_ids announcing they hold it
     providers: RwLock<HashMap<String, HashSet<String>>>,
     /// Only this key may register the `root-authority` role.
     root_public_key: Option<String>,
+    /// When set, the node table is snapshotted here so registrations survive
+    /// a directory restart (nodes also re-register every ~60s).
+    persist_path: Option<std::path::PathBuf>,
 }
 
 impl Directory {
@@ -303,11 +314,62 @@ impl Directory {
             nodes: RwLock::new(HashMap::new()),
             providers: RwLock::new(HashMap::new()),
             root_public_key,
+            persist_path: None,
         })
     }
 
+    /// A directory whose node table persists across restarts. Snapshot
+    /// entries are re-verified on load; a tampered snapshot cannot inject
+    /// unverifiable registrations.
+    pub fn with_persistence(
+        root_public_key: Option<String>,
+        path: std::path::PathBuf,
+    ) -> Arc<Self> {
+        let mut nodes = HashMap::new();
+        if let Ok(bytes) = std::fs::read(&path) {
+            match serde_json::from_slice::<Vec<NodeEntry>>(&bytes) {
+                Ok(entries) => {
+                    for entry in entries {
+                        if entry.registration.verify().is_ok() {
+                            nodes.insert(entry.registration.node_id.clone(), entry);
+                        }
+                    }
+                    tracing::info!(
+                        "directory: restored {} node(s) from {}",
+                        nodes.len(),
+                        path.display()
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    "directory: ignoring corrupt snapshot {}: {e}",
+                    path.display()
+                ),
+            }
+        }
+        Arc::new(Self {
+            nodes: RwLock::new(nodes),
+            providers: RwLock::new(HashMap::new()),
+            root_public_key,
+            persist_path: Some(path),
+        })
+    }
+
+    /// Best-effort snapshot (write-then-rename so a crash never truncates it).
+    fn persist(&self, nodes: &HashMap<String, NodeEntry>) {
+        let Some(path) = &self.persist_path else {
+            return;
+        };
+        let entries: Vec<&NodeEntry> = nodes.values().collect();
+        if let Ok(bytes) = serde_json::to_vec(&entries) {
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, bytes).is_ok() {
+                std::fs::rename(&tmp, path).ok();
+            }
+        }
+    }
+
     /// Register (or refresh) a node. Signature-verified; `root-authority` is
-    /// restricted to the Federate Root Key.
+    /// restricted to the Federate Root Key; total node count is capped.
     pub async fn register(&self, reg: NodeRegistration) -> Result<()> {
         reg.verify()?;
         if reg.roles.contains(&NodeRole::RootAuthority)
@@ -321,6 +383,13 @@ impl Directory {
         }
         let now = chrono::Utc::now().to_rfc3339();
         let mut nodes = self.nodes.write().await;
+        if nodes.len() >= MAX_NODES && !nodes.contains_key(&reg.node_id) {
+            return Err(FederateError::VerificationFailed {
+                layer: "node-registration".into(),
+                subject: reg.node_id.clone(),
+                reason: format!("directory is full ({MAX_NODES} nodes)"),
+            });
+        }
         let entry = nodes
             .entry(reg.node_id.clone())
             .or_insert_with(|| NodeEntry {
@@ -334,12 +403,50 @@ impl Directory {
         entry.last_seen = now;
         entry.status = NodeStatus::Online;
         entry.consecutive_failures = 0;
+        self.persist(&nodes);
         Ok(())
+    }
+
+    /// Drop nodes not seen for `max_age` (no successful health check and no
+    /// re-registration), and scrub them from provider lists. Returns how many
+    /// were removed. An unparseable `last_seen` counts as stale (fail closed).
+    pub async fn prune_stale(&self, max_age: std::time::Duration) -> usize {
+        let now = chrono::Utc::now();
+        let mut nodes = self.nodes.write().await;
+        let stale: Vec<String> = nodes
+            .iter()
+            .filter(
+                |(_, entry)| match chrono::DateTime::parse_from_rfc3339(&entry.last_seen) {
+                    Ok(seen) => {
+                        now.signed_duration_since(seen)
+                            > chrono::Duration::from_std(max_age)
+                                .unwrap_or_else(|_| chrono::Duration::days(1))
+                    }
+                    Err(_) => true,
+                },
+            )
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &stale {
+            nodes.remove(id);
+        }
+        if !stale.is_empty() {
+            let mut providers = self.providers.write().await;
+            providers.retain(|_, ids| {
+                for id in &stale {
+                    ids.remove(id);
+                }
+                !ids.is_empty()
+            });
+            tracing::info!("directory: pruned {} stale node(s)", stale.len());
+            self.persist(&nodes);
+        }
+        stale.len()
     }
 
     /// A storage/CDN node announces block hashes it can serve. The
     /// announcement must be signed by the node's own key and the node must
-    /// already be registered — this stops anyone from stuffing another node's
+    /// already be registered; this stops anyone from stuffing another node's
     /// provider list. Hashes are still trust-but-verify (gateways re-hash on
     /// fetch); malformed hashes are dropped so they never reach a fetch URL.
     pub async fn announce_blocks(&self, announce: BlockAnnounce) -> Result<()> {
@@ -436,12 +543,14 @@ impl Directory {
 
 /// Poll every registered node's `{health_endpoint}/health` on an interval and
 /// mark it online (200), degraded (1-2 consecutive failures), or offline (3+).
+/// Also expires nodes not seen for [`STALE_NODE_MAX_AGE`].
 pub async fn health_check_loop(dir: Arc<Directory>, interval: std::time::Duration) {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .expect("reqwest client");
     loop {
+        dir.prune_stale(STALE_NODE_MAX_AGE).await;
         let nodes = dir.list(None, false).await;
         for node in nodes {
             let url = format!(
@@ -767,6 +876,87 @@ mod tests {
         directory.mark(&g2.node_id(), false, None).await; // 1 failure -> degraded
         let ranked = directory.healthy(NodeRole::Gateway).await;
         assert_eq!(ranked[0].registration.node_id, g1.node_id());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn stale_nodes_pruned_and_scrubbed_from_providers() {
+        let base = std::env::temp_dir().join(format!("fed-stale-{}", std::process::id()));
+        let id = NodeIdentity::load_or_create(&base).unwrap();
+        let directory = Directory::new(None);
+        directory
+            .register(reg_with(&id, "45.0.0.1", vec![NodeRole::Cdn]))
+            .await
+            .unwrap();
+        let hash = federate_storage::hash_bytes(b"block");
+        directory
+            .announce_blocks(BlockAnnounce::signed(&id, vec![hash.clone()]).unwrap())
+            .await
+            .unwrap();
+        // Fresh node: nothing pruned.
+        assert_eq!(
+            directory
+                .prune_stale(std::time::Duration::from_secs(3600))
+                .await,
+            0
+        );
+        // Backdate last_seen: node + its provider entries must be removed.
+        {
+            let mut nodes = directory.nodes.write().await;
+            nodes.get_mut(&id.node_id()).unwrap().last_seen =
+                (chrono::Utc::now() - chrono::Duration::days(2)).to_rfc3339();
+        }
+        assert_eq!(
+            directory
+                .prune_stale(std::time::Duration::from_secs(24 * 3600))
+                .await,
+            1
+        );
+        assert!(directory.get(&id.node_id()).await.is_none());
+        assert!(directory.providers_for_block(&hash, None).await.is_empty());
+        // Unparseable last_seen fails closed (pruned).
+        directory
+            .register(reg_with(&id, "45.0.0.1", vec![NodeRole::Cdn]))
+            .await
+            .unwrap();
+        {
+            let mut nodes = directory.nodes.write().await;
+            nodes.get_mut(&id.node_id()).unwrap().last_seen = "garbage".into();
+        }
+        assert_eq!(
+            directory
+                .prune_stale(std::time::Duration::from_secs(3600))
+                .await,
+            1
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn persistence_survives_restart_and_rejects_tampered_snapshot() {
+        let base = std::env::temp_dir().join(format!("fed-persist-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let id = NodeIdentity::load_or_create(&base.join("id")).unwrap();
+        let snapshot = base.join("nodes.json");
+
+        let directory = Directory::with_persistence(None, snapshot.clone());
+        directory
+            .register(reg_with(&id, "45.0.0.7", vec![NodeRole::Gateway]))
+            .await
+            .unwrap();
+        drop(directory);
+
+        // "Restart": a fresh directory restores the signed registration.
+        let restored = Directory::with_persistence(None, snapshot.clone());
+        assert!(restored.get(&id.node_id()).await.is_some());
+
+        // Tampered snapshot entries fail signature verification -> dropped.
+        let mut entries: Vec<NodeEntry> =
+            serde_json::from_slice(&std::fs::read(&snapshot).unwrap()).unwrap();
+        entries[0].registration.region = "evil".into();
+        std::fs::write(&snapshot, serde_json::to_vec(&entries).unwrap()).unwrap();
+        let poisoned = Directory::with_persistence(None, snapshot.clone());
+        assert!(poisoned.get(&id.node_id()).await.is_none());
         std::fs::remove_dir_all(&base).ok();
     }
 

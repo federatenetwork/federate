@@ -1,8 +1,8 @@
-//! federate-bootstrap — how new nodes discover the network.
+//! federate-bootstrap: how new nodes discover the network.
 //!
 //! A bootstrap node answers "who is out there": root mirrors, DNS nodes,
 //! gateway nodes, directory nodes, other bootstrap nodes. It never decides
-//! what is valid — that is the signed root zone's job.
+//! what is valid; that is the signed root zone's job.
 
 use federate_core::{FederateError, Result};
 use serde::{Deserialize, Serialize};

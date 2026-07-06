@@ -1,11 +1,11 @@
-# HANDOFF — Decentralized infrastructure roles (2026-07-06)
+# HANDOFF: Decentralized infrastructure roles (2026-07-06)
 
 ## Goal delivered
 
 Federate Network no longer depends on a single VPS for everything.
 `federate.network` (Node 1) stays the official **root authority** for TLDs;
-everything else — DNS, gateways, storage, CDN, search, bootstrap, root
-mirroring — can now be run by anyone as a Federate node.
+everything else (DNS, gateways, storage, CDN, search, bootstrap, root
+mirroring) can now be run by anyone as a Federate node.
 
 Core principle enforced in code:
 
@@ -14,10 +14,10 @@ Core principle enforced in code:
 
 ## Status
 
-- `cargo build --workspace` — clean, 0 warnings/errors
-- `cargo test --workspace` — 18 tests, all pass
+- `cargo build --workspace` - clean, 0 warnings/errors
+- `cargo test --workspace` - 18 tests, all pass
 - End-to-end smoke-tested with real processes (see "Verification" below)
-- Nothing committed yet — all changes are in the working tree
+- Nothing committed yet - all changes are in the working tree
 
 ## New crates
 
@@ -43,10 +43,10 @@ Core principle enforced in code:
 
 Was a stub returning 127.0.0.1. Now a real authoritative UDP DNS server:
 
-- `wire.rs` — minimal hand-rolled DNS codec (parse question, build A/AAAA
+- `wire.rs` - minimal hand-rolled DNS codec (parse question, build A/AAAA
   answers with compression pointer, SERVFAIL, `build_query`/`parse_answers`
   for CLI testing). Round-trip test included.
-- `DnsServer` — verifies root zone signature (via shared `Resolver`; never
+- `DnsServer` - verifies root zone signature (via shared `Resolver`; never
   trusts unverified root data), answers any name under a resolvable TLD in
   the signed zone with **multiple healthy gateway IPs from the directory**
   (never one hardcoded IP), **TTL 30s**, SERVFAIL when no healthy gateway,
@@ -55,21 +55,21 @@ Was a stub returning 127.0.0.1. Now a real authoritative UDP DNS server:
 
 ## Modified existing code
 
-- `Cargo.toml` (workspace) — 6 new lib crates + 4 new bins as members;
+- `Cargo.toml` (workspace) - 6 new lib crates + 4 new bins as members;
   added `toml = "0.8"` workspace dep.
-- `federate-storage` — added `BlockStore::remove` (for CDN eviction).
-- `federate-client` — added `pub async fn get_json(url)` helper.
-- `federate-resolution` — `Resolver` gained optional directory support:
+- `federate-storage` - added `BlockStore::remove` (for CDN eviction).
+- `federate-client` - added `pub async fn get_json(url)` helper.
+- `federate-resolution` - `Resolver` gained optional directory support:
   `with_directory(DirectoryClient, region)`. `block()` now tries ranked
   CDN/storage/origin providers first (each response hash-verified; bad
   providers skipped), falls back to Node 1. Added public
   `fetch_and_cache_block` (CDN fetch-on-miss path).
-- `federate-server` (Node 1) — hosts the official node directory:
+- `federate-server` (Node 1) - hosts the official node directory:
   `Store.directory`, merged `federate_directory::router`, spawns
   `health_check_loop` (15s). `/v1/bootstrap` now returns live
   root_mirrors/dns_nodes/gateway_nodes/bootstrap_nodes from the directory.
   Removed the `/v1/nodes` stub (real endpoint now).
-- `federate-cli` — new subcommands:
+- `federate-cli` - new subcommands:
   - `federate node register|status|roles|health|list|run --roles ...`
     (`run` spawns `federate-noded`)
   - `federate dns test <domain> --server ip:port` (sends real DNS query via
@@ -79,16 +79,16 @@ Was a stub returning 127.0.0.1. Now a real authoritative UDP DNS server:
 
 ## Docs written
 
-- `docs/decentralization.md` — what is/isn't decentralized, why TLD authority
+- `docs/decentralization.md` - what is/isn't decentralized, why TLD authority
   stays root-signed, chain-of-trust diagram, data-flow diagram
-- `docs/nodes.md` — roles table, config format, registration, health API, CLI
-- `docs/dns-nodes.md` — DNS node behavior + how to run one
-- `docs/gateway-nodes.md` — gateway verification chain + how to run one
-- `docs/storage-cdn-nodes.md` — storage vs cdn, trust model, provider selection
-- `docs/root-mirrors.md` — mirrors distribute, can't modify (signature makes cheating pointless)
-- `docs/node-directory.md` — tracked fields, registration, health checking, API
-- `docs/README.md` — updated binary table + doc index
-- `deploy/federate.toml.example` — annotated node config
+- `docs/nodes.md` - roles table, config format, registration, health API, CLI
+- `docs/dns-nodes.md` - DNS node behavior + how to run one
+- `docs/gateway-nodes.md` - gateway verification chain + how to run one
+- `docs/storage-cdn-nodes.md` - storage vs cdn, trust model, provider selection
+- `docs/root-mirrors.md` - mirrors distribute, can't modify (signature makes cheating pointless)
+- `docs/node-directory.md` - tracked fields, registration, health checking, API
+- `docs/README.md` - updated binary table + doc index
+- `deploy/federate.toml.example` - annotated node config
 
 ## Security model (all enforced in code)
 
@@ -119,12 +119,12 @@ Real-process smoke tests (all passed):
 
 ## Known gaps / next steps
 
-- DNS is UDP-only (no TCP fallback / truncation handling) — fine for A/AAAA.
+- DNS is UDP-only (no TCP fallback / truncation handling); fine for A/AAAA.
 - DNS gateway cache is empty for the first ~10s after start (SERVFAIL until
   first directory refresh). Could refresh once before binding.
 - Directory is in-memory (state lost on Node 1 restart; nodes re-register
   within 60s so it self-heals).
-- `NodeRuntime` health_endpoint assumes `http://{public_ip}:{listen port}` —
+- `NodeRuntime` health_endpoint assumes `http://{public_ip}:{listen port}` -
   storage/CDN block URLs reuse health_endpoint as base (works because noded
   serves blocks + health on one listener).
 - Search crawls only `/` per domain (manifest path walk not yet wired).
@@ -148,14 +148,14 @@ Inspection + fixes on top of the handoff above. Build/tests/clippy all clean:
    `/v1/block/:hash`, `/v1/manifest/:hash`, and CDN fetch URLs.
 2. **DNS answer spoofing.** The upstream forwarder used an *unconnected* UDP
    socket and returned the first datagram received, without checking the DNS
-   transaction ID — an off-path attacker could inject forged answers for
+   transaction ID, so an off-path attacker could inject forged answers for
    `google.com` et al.
 3. **Unauthenticated block announcements.** `POST /v1/nodes/announce-blocks`
    took `{node_id, blocks}` with no signature, so anyone could stuff any
    node's provider list (provider-map poisoning / DoS).
 4. **SSRF via `health_endpoint`.** Registrations carried an arbitrary URL that
    the directory's health checker and gateway block-fetches would GET every
-   few seconds — a node could point it at `169.254.169.254` or someone else's
+   few seconds: a node could point it at `169.254.169.254` or someone else's
    server. IPs weren't validated either.
 5. **Broken manifest cache.** The resolver cached *re-serialized* manifest JSON
    under the original hash, so the cached bytes never re-hashed to that hash:
@@ -232,5 +232,5 @@ cargo build --release
 ./target/release/federate root verify --bootstrap http://127.0.0.1:9100
 ```
 
-Hetzner: see `docs/deployment-hetzner.md` §8–10 (DNS port 53, gateway node,
+Hetzner: see `docs/deployment-hetzner.md` §8-10 (DNS port 53, gateway node,
 ufw firewall, key backups).

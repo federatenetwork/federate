@@ -1,5 +1,7 @@
 # Federate Protocol (MVP)
 
+> [Versão em português (pt-BR)](pt-BR/protocol.md)
+
 ## Root zone
 
 Structured, serializable, cacheable, signable JSON served at `GET /v1/root`:
@@ -26,7 +28,7 @@ Structured, serializable, cacheable, signable JSON served at `GET /v1/root`:
 
 ## TLDs
 
-`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.tipos`, `.types` — defined in `federate-naming`.
+`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.tipos`, `.types`, defined in `federate-naming`.
 
 ## Domain records
 
@@ -74,8 +76,8 @@ manifest and block before use, and re-verify blocks on cache read.
 | `GET /v1/domain/{fqdn}` | single domain record |
 | `GET /v1/manifest/{hash}` | signed manifest |
 | `GET /v1/block/{hash}` | content block |
-| `GET /v1/nodes` | node discovery (stub — phase 4) |
-| `GET /v1/peers` | peer/CDN discovery (stub — phase 5) |
+| `GET /v1/nodes` | node discovery (stub - phase 4) |
+| `GET /v1/peers` | peer/CDN discovery (stub - phase 5) |
 
 ## Daemon local API (`127.0.0.1:7777`)
 

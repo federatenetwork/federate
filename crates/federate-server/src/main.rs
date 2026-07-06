@@ -1,4 +1,4 @@
-//! federate-server — Node 1, the public bootstrap/control-plane server and
+//! federate-server: Node 1, the public bootstrap/control-plane server and
 //! home of the Federate Root Registry.
 //!
 //! At startup it:
@@ -135,7 +135,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         tlds.insert(name, rec);
     }
 
-    // Example delegated TLD (seed data — marketplace/payment arrive later).
+    // Example delegated TLD (seed data; marketplace/payment arrive later).
     // Demonstrates root → operator delegation; delegated resolution itself
     // is phase 6, so resolving under it returns DelegatedRegistryNotImplemented.
     let femboy_operator = NodeIdentity::load_or_create(&args.data_dir.join("op-femboy"))?;
@@ -153,7 +153,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
             registry_endpoint: Some("https://registry.femboy.example (placeholder)".into()),
             registry_manifest_hash: None,
             policy_hash: None,
-            pricing: Some(serde_json::json!({ "note": "pricing metadata placeholder — no payments in this phase" })),
+            pricing: Some(serde_json::json!({ "note": "pricing metadata placeholder; no payments in this phase" })),
             created_at: now.clone(),
             updated_at: now.clone(),
             expires_at: Some("2027-07-03T00:00:00Z".into()),
@@ -258,9 +258,13 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     }
 
     // --- Signed root zone ---
+    // Version must be monotonic across restarts (daemons reject a zone older
+    // than one they already verified; that is the rollback protection), so derive it
+    // from the wall clock instead of hardcoding.
+    let root_version = chrono::Utc::now().timestamp().max(0) as u64;
     let mut root = RootZone {
         network: federate_core::NETWORK_NAME.into(),
-        root_version: 2,
+        root_version,
         generated_at: now.clone(),
         root_public_key: root_key.node_id(),
         tlds,
@@ -272,7 +276,11 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     root.signature = Some(root_key.sign(&root.signable_bytes()?));
     root.verify(&root_key.node_id())?; // self-check before serving
 
-    let directory = federate_directory::Directory::new(Some(root.root_public_key.clone()));
+    // Node registrations survive restarts (and nodes re-register every ~60s).
+    let directory = federate_directory::Directory::with_persistence(
+        Some(root.root_public_key.clone()),
+        args.data_dir.join("directory-nodes.json"),
+    );
 
     Ok(Store {
         root,
@@ -345,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn index() -> impl IntoResponse {
     axum::response::Html(
-        "<h1>Federate Network — Node 1</h1>\
+        "<h1>Federate Network: Node 1</h1>\
          <p>Bootstrap/control-plane node and Federate Root Registry.</p>\
          <p>Endpoints: /health /v1/status /v1/bootstrap /v1/root /v1/tlds /v1/tld/:tld \
          /v1/tld-check/:tld /v1/blocked /v1/reserved /v1/domains?tld= /v1/domain/:fqdn \

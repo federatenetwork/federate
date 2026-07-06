@@ -1,4 +1,4 @@
-//! federated — the local Federate Network daemon.
+//! federated: the local Federate Network daemon.
 //!
 //! Starts the browser gateway (127.0.0.1:80), the local API (127.0.0.1:7777),
 //! the cache, and node identity. Future hooks: DNS resolver, peer discovery.
@@ -68,12 +68,28 @@ async fn main() -> anyhow_lite::Result {
 
     match resolver.refresh_root().await {
         Ok(zone) => tracing::info!(
-            "root zone v{} loaded — {} domains, {} TLDs",
+            "root zone v{} loaded: {} domains, {} TLDs",
             zone.root_version,
             zone.domains.len(),
             zone.tlds.len()
         ),
         Err(e) => tracing::warn!("could not load root zone yet: {e} (will retry on demand)"),
+    }
+
+    // Keep the verified root zone fresh: Node 1 re-signs the zone (and new
+    // manifest hashes) whenever sites change or it restarts. Without this
+    // loop the daemon would keep resolving against a stale in-memory zone
+    // until its own restart. Rollback protection still rejects older zones.
+    {
+        let resolver = resolver.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if let Err(e) = resolver.refresh_root().await {
+                    tracing::debug!("root zone refresh failed: {e} (keeping cached zone)");
+                }
+            }
+        });
     }
 
     let state = Arc::new(AppState {
@@ -100,7 +116,7 @@ async fn main() -> anyhow_lite::Result {
         axum::serve(listener, api).await.expect("daemon API");
     });
 
-    // Browser gateway — blocks until shutdown.
+    // Browser gateway; blocks until shutdown.
     federate_gateway::serve(resolver, config.gateway_addr).await?;
     Ok(())
 }

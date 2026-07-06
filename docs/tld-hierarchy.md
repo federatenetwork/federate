@@ -1,7 +1,9 @@
 # The Federate TLD Hierarchy
 
+> [Versão em português (pt-BR)](pt-BR/tld-hierarchy.md)
+
 Federate Network runs a parallel web namespace with its own root. The root
-layer does not sell every domain directly forever — it controls **which TLDs
+layer does not sell every domain directly forever; it controls **which TLDs
 exist**, which are reserved or blocked, and **who operates** each delegated
 TLD.
 
@@ -33,8 +35,8 @@ ICANN/IANA DNS? is it blocked for safety/legal/governance reasons?
 |---|---|
 | `official` | Operated by Federate Network itself (`.fed .pagina .rosa .cara .mosca .tipos .types`) |
 | `delegated` | Operated by a user/operator (e.g. `.femboy`) |
-| `reserved` | Cannot be purchased — infrastructure/governance/safety/future use (`root`, `admin`, `registry`, …) |
-| `blocked` | Cannot be created — public DNS collision, brand, phishing, policy (`com`, `net`, `dev`, `app`, …) |
+| `reserved` | Cannot be purchased - infrastructure/governance/safety/future use (`root`, `admin`, `registry`, …) |
+| `blocked` | Cannot be created - public DNS collision, brand, phishing, policy (`com`, `net`, `dev`, `app`, …) |
 | `disabled` | Exists but temporarily not resolvable |
 | `pending` | Application exists, not approved |
 | `expired` | Ownership/lease expired |
@@ -53,13 +55,13 @@ ICANN/IANA DNS? is it blocked for safety/legal/governance reasons?
 
 Example: Federate delegates `.femboy` to a user. That user becomes the TLD
 Operator. Other users then register `eu.femboy`, `joao.femboy`, `wiki.femboy`
-— issued by the `.femboy` operator, **not** by Federate. Federate's root only
+- issued by the `.femboy` operator, **not** by Federate. Federate's root only
 records that `.femboy` exists, who owns/operates it, what registry it uses,
 and whether it is active.
 
 ## Why this avoids collisions with the normal internet
 
-Every TLD creation is validated against `blocked_tlds.txt` — the full public
+Every TLD creation is validated against `blocked_tlds.txt`: the full public
 IANA/ICANN TLD list. `.com`, `.net`, `.org`, `.br`, `.dev`, `.app`, `.live`,
 `.page`, `.google`, `.bank`, `.gov`, … can never exist inside Federate. A
 Federate name therefore never shadows a real internet name, and the future

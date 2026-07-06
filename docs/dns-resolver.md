@@ -1,5 +1,7 @@
 # Planned Local DNS Resolver
 
+> [Versão em português (pt-BR)](pt-BR/dns-resolver.md)
+
 Not implemented in the MVP. The MVP uses hosts-file mappings. This document
 plus the `federate-dns` crate define the boundary so DNS can be added without
 touching the gateway.
@@ -10,16 +12,16 @@ touching the gateway.
 - Answer Federate TLDs (`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.tipos`, `.types`):
   - gateway mode: return `127.0.0.1` so the local `federated` gateway serves the site
   - future modes: return remote gateway IPs or local service IPs
-- **Forward all other queries** to the user's normal upstream resolver —
+- **Forward all other queries** to the user's normal upstream resolver -
   normal internet DNS must never break.
 - Use the same resolution engine (`federate-resolution`) as the HTTP gateway
   for anything beyond name→IP (e.g. checking whether a domain exists).
 - Be installed automatically by the future desktop installer (replacing manual
-  hosts-file edits — roadmap phase 3).
+  hosts-file edits; roadmap phase 3).
 
 ## OS integration plans
 
-- **macOS**: `/etc/resolver/fed` (and one per TLD) pointing at the local resolver — per-TLD resolution without touching global DNS.
+- **macOS**: `/etc/resolver/fed` (and one per TLD) pointing at the local resolver, giving per-TLD resolution without touching global DNS.
 - **Linux**: systemd-resolved routing domains (`~fed`, `~pagina`, …) via `resolvectl`, or an NSS/dnsmasq entry.
 - **Windows**: NRPT rules (Name Resolution Policy Table) per TLD.
 

@@ -1,4 +1,4 @@
-//! federate-cdn — block caching, replica lookup, provider selection, eviction.
+//! federate-cdn: block caching, replica lookup, provider selection, eviction.
 //!
 //! CDN/storage nodes are gateway-facing, never browser-facing: browsers talk
 //! HTTP to gateways; gateways fetch hash-verified blocks from CDN/storage/
@@ -35,8 +35,13 @@ pub fn rank_providers<'a>(providers: &'a [NodeEntry], region: Option<&str>) -> V
 }
 
 /// Fetch a block from a provider's block API and verify its hash. A provider
-/// returning wrong bytes is detected here — nodes are never trusted blindly.
+/// returning wrong bytes is detected here; nodes are never trusted blindly.
 pub async fn fetch_block_from(provider: &NodeEntry, hash: &str) -> Result<Vec<u8>> {
+    // Never let a non-content-address reach a fetch URL (defense in depth -
+    // callers validate too).
+    if !federate_storage::is_valid_hash(hash) {
+        return Err(FederateError::BlockNotFound(hash.to_string()));
+    }
     let base = provider.registration.health_endpoint.trim_end_matches('/');
     let url = format!("{base}/v1/block/{hash}");
     let resp = reqwest::Client::builder()
@@ -50,11 +55,9 @@ pub async fn fetch_block_from(provider: &NodeEntry, hash: &str) -> Result<Vec<u8
     if !resp.status().is_success() {
         return Err(FederateError::BlockNotFound(hash.to_string()));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| FederateError::Network(e.to_string()))?
-        .to_vec();
+    // Cap the read: a provider is untrusted and must not be able to stream
+    // unbounded bytes into gateway memory. Hash-verified after the read.
+    let bytes = federate_client::read_capped(resp, federate_client::MAX_BLOCK_BYTES).await?;
     federate_storage::verify(&bytes, hash)?;
     Ok(bytes)
 }

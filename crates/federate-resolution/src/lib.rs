@@ -1,4 +1,4 @@
-//! federate-resolution — the central resolution engine.
+//! federate-resolution: the central resolution engine.
 //!
 //! domain -> root zone -> TLD record -> domain record -> manifest -> blocks
 //!
@@ -70,7 +70,7 @@ pub struct Resolver {
     trusted_key_path: PathBuf,
     /// Optional node directory: when set, blocks are fetched from healthy
     /// CDN/storage/origin providers first, falling back to Node 1. Every
-    /// provider response is hash-verified — providers are never trusted.
+    /// provider response is hash-verified; providers are never trusted.
     directory: Option<federate_directory::DirectoryClient>,
     region: Option<String>,
 }
@@ -142,7 +142,7 @@ impl Resolver {
                 std::fs::write(&self.trusted_key_path, &zone.root_public_key)?;
                 *self.trusted_root_key.write().await = Some(zone.root_public_key.clone());
                 tracing::warn!(
-                    "pinned Federate Root Key on first use: {} — pass --root-key to configure explicitly",
+                    "pinned Federate Root Key on first use: {}; pass --root-key to configure explicitly",
                     zone.root_public_key
                 );
                 Ok(())
@@ -150,9 +150,22 @@ impl Resolver {
         }
     }
 
+    /// The last verified zone we already hold (memory, then disk cache).
+    /// Used for rollback protection when a node serves an older zone.
+    async fn last_verified_zone(&self) -> Option<Arc<RootZone>> {
+        if let Some(zone) = self.root.read().await.clone() {
+            return Some(zone);
+        }
+        let cached = self.root_cache.load().ok()?;
+        self.verify_zone(&cached).await.ok()?;
+        Some(Arc::new(cached))
+    }
+
     /// Fetch the root zone from Node 1, verify its signature chain, fall back
     /// to the (previously verified) disk cache when the network is down.
-    /// Unverifiable zones are NEVER stored or used.
+    /// Unverifiable zones are NEVER stored or used. A correctly signed but
+    /// OLDER zone than one we already verified is also rejected (rollback /
+    /// replay protection): Node 1 distributes signed data, it cannot rewind it.
     pub async fn refresh_root(&self) -> Result<Arc<RootZone>> {
         match self.client.fetch_root().await {
             Ok(zone) => {
@@ -169,6 +182,17 @@ impl Resolver {
                         }
                     }
                     return Err(e);
+                }
+                if let Some(known) = self.last_verified_zone().await {
+                    if zone.root_version < known.root_version {
+                        tracing::error!(
+                            fetched = zone.root_version,
+                            known = known.root_version,
+                            "REJECTED root zone older than the last verified one (possible replay); keeping the newer zone"
+                        );
+                        *self.root.write().await = Some(known.clone());
+                        return Ok(known);
+                    }
                 }
                 self.root_cache.store(&zone)?;
                 let arc = Arc::new(zone);
@@ -213,7 +237,9 @@ impl Resolver {
             // `hash`, exactly as fetched. A mismatch means tampering/corruption.
             if federate_storage::verify(&bytes, hash).is_ok() {
                 if let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) {
-                    return Ok(m);
+                    if m.validate().is_ok() {
+                        return Ok(m);
+                    }
                 }
             }
             std::fs::remove_file(&cached).ok();
@@ -223,7 +249,11 @@ impl Resolver {
         let bytes = self.client.fetch_manifest_bytes(hash).await?;
         let manifest: Manifest = serde_json::from_slice(&bytes)?;
         manifest.validate()?;
-        std::fs::write(&cached, &bytes)?;
+        // Write-then-rename: a crash mid-write must not leave a truncated
+        // manifest at the content-addressed cache path.
+        let tmp = self.manifest_dir.join(format!("{hash}.tmp"));
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, &cached)?;
         Ok(manifest)
     }
 
@@ -233,7 +263,7 @@ impl Resolver {
         match self.blocks.get(hash) {
             Ok(bytes) => return Ok(bytes),
             Err(FederateError::HashMismatch { .. }) => {
-                tracing::warn!("cached block {hash} failed hash validation — evicting");
+                tracing::warn!("cached block {hash} failed hash validation; evicting");
             }
             Err(_) => {}
         }
@@ -276,10 +306,30 @@ impl Resolver {
             .ok_or_else(|| FederateError::TldNotFound {
                 tld: domain.tld.clone(),
             })?;
+        if !tld_rec.status.is_resolvable() || tld_rec.is_expired() {
+            return Err(FederateError::TldUnavailable {
+                tld: domain.tld.clone(),
+                status: if tld_rec.is_expired() {
+                    "expired".into()
+                } else {
+                    tld_rec.status.as_str().into()
+                },
+            });
+        }
         let record = root
             .lookup(&domain.fqdn())
             .ok_or_else(|| FederateError::DomainNotFound(domain.fqdn()))?;
         record.verify(&tld_rec.operator_public_key)?;
+        if !record.status.is_resolvable() || record.is_expired() {
+            return Err(FederateError::TldUnavailable {
+                tld: domain.tld.clone(),
+                status: if record.is_expired() {
+                    "expired".into()
+                } else {
+                    record.status.as_str().into()
+                },
+            });
+        }
         Ok(record.clone())
     }
 
@@ -346,11 +396,18 @@ impl Resolver {
             });
         }
 
-        // 5. TLD active?
+        // 5. TLD active? Status AND expiry; an old signed record whose lease
+        // has passed must stop resolving even before governance flips status.
         if !tld_rec.status.is_resolvable() {
             return Ok(Resolved::TldUnavailable {
                 tld: domain.tld.clone(),
                 status: tld_rec.status.as_str().to_string(),
+            });
+        }
+        if tld_rec.is_expired() {
+            return Ok(Resolved::TldUnavailable {
+                tld: domain.tld.clone(),
+                status: "expired".to_string(),
             });
         }
 
@@ -395,6 +452,12 @@ impl Resolver {
                 status: record.status.as_str().to_string(),
             });
         }
+        if record.is_expired() {
+            return Ok(Resolved::DomainUnavailable {
+                domain: fqdn,
+                status: "expired".to_string(),
+            });
+        }
 
         // 8. Manifest: content-addressed fetch + owner signature.
         let manifest = match self.manifest(&record.manifest_hash).await {
@@ -419,8 +482,8 @@ impl Resolver {
         }
 
         // 9. Content block, hash-verified (fetch AND cache read).
-        let file_hash = match manifest.resolve_path(path) {
-            Some(h) => h.to_string(),
+        let (file_name, file_hash) = match manifest.resolve_path(path) {
+            Some((name, h)) => (name, h.to_string()),
             None => {
                 return Ok(Resolved::PathNotFound {
                     domain: fqdn,
@@ -442,12 +505,6 @@ impl Resolver {
             Err(e) => return Err(e),
         };
 
-        let file_name = manifest
-            .files
-            .iter()
-            .find(|(_, h)| **h == file_hash)
-            .map(|(p, _)| p.clone())
-            .unwrap_or_else(|| path.to_string());
         let mime = mime_guess::from_path(&file_name)
             .first_or_octet_stream()
             .to_string();
@@ -457,5 +514,227 @@ impl Resolver {
             bytes,
             mime,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use federate_identity::NodeIdentity;
+    use federate_naming::{DomainRecord, DomainStatus, TargetType, TldMode, TldStatus};
+    use federate_root::{RootZone, TldRecord, SIGNATURE_ALGORITHM};
+    use std::collections::BTreeMap;
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fed-resolution-{name}-{}-{}",
+            std::process::id(),
+            name.len()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    struct Keys {
+        root: NodeIdentity,
+        operator: NodeIdentity,
+    }
+
+    fn keys(dir: &Path) -> Keys {
+        Keys {
+            root: NodeIdentity::load_or_create(&dir.join("root")).unwrap(),
+            operator: NodeIdentity::load_or_create(&dir.join("op")).unwrap(),
+        }
+    }
+
+    fn signed_tld(keys: &Keys, tld: &str) -> TldRecord {
+        let mut rec = TldRecord {
+            tld: tld.into(),
+            status: TldStatus::Official,
+            mode: TldMode::Official,
+            owner_public_key: keys.root.node_id(),
+            operator_public_key: keys.operator.node_id(),
+            operator_name: "test".into(),
+            registry_type: federate_naming::RegistryType::RootManaged,
+            registry_endpoint: None,
+            registry_manifest_hash: None,
+            policy_hash: None,
+            pricing: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            expires_at: None,
+            notes: None,
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        rec.signature = Some(keys.root.sign(&rec.signable_bytes().unwrap()));
+        rec
+    }
+
+    fn signed_domain(keys: &Keys, fqdn: &str, expires_at: Option<String>) -> DomainRecord {
+        let (label, tld) = fqdn.split_once('.').unwrap();
+        let mut rec = DomainRecord {
+            domain: fqdn.into(),
+            tld: tld.into(),
+            label: label.into(),
+            owner_public_key: "00".repeat(32),
+            target_type: TargetType::Manifest,
+            manifest_hash: "0".repeat(64),
+            service_id: None,
+            node_id: None,
+            status: DomainStatus::Active,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            expires_at,
+            renewal: None,
+            pricing: None,
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        rec.signature = Some(keys.operator.sign(&rec.signable_bytes().unwrap()));
+        rec
+    }
+
+    fn signed_zone(keys: &Keys, version: u64, domains: BTreeMap<String, DomainRecord>) -> RootZone {
+        let mut tlds = BTreeMap::new();
+        tlds.insert("fed".to_string(), signed_tld(keys, "fed"));
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: version,
+            generated_at: "t".into(),
+            root_public_key: keys.root.node_id(),
+            tlds,
+            domains,
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(keys.root.sign(&zone.signable_bytes().unwrap()));
+        zone
+    }
+
+    /// Serve a fixed zone at /v1/root on an ephemeral port.
+    async fn serve_zone(zone: RootZone) -> String {
+        let app = axum::Router::new().route(
+            "/v1/root",
+            axum::routing::get(move || {
+                let zone = zone.clone();
+                async move { axum::Json(zone) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn rollback_zone_rejected_newer_cache_wins() {
+        let dir = tmp("rollback");
+        let keys = keys(&dir);
+        let newer = signed_zone(&keys, 10, BTreeMap::new());
+        let older = signed_zone(&keys, 5, BTreeMap::new());
+
+        // Node serves a correctly signed but OLDER zone (replay).
+        let base = serve_zone(older).await;
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        // Pre-seed the verified cache with the newer zone.
+        RootCache::new(&data_dir).store(&newer).unwrap();
+
+        let resolver =
+            Resolver::new(NodeClient::new(&base), &data_dir, Some(keys.root.node_id())).unwrap();
+        let zone = resolver.refresh_root().await.unwrap();
+        assert_eq!(
+            zone.root_version, 10,
+            "replayed older zone must not displace the newer verified one"
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_zone_from_node_accepted() {
+        let dir = tmp("forward");
+        let keys = keys(&dir);
+        let old = signed_zone(&keys, 3, BTreeMap::new());
+        let new = signed_zone(&keys, 4, BTreeMap::new());
+        let base = serve_zone(new).await;
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        RootCache::new(&data_dir).store(&old).unwrap();
+        let resolver =
+            Resolver::new(NodeClient::new(&base), &data_dir, Some(keys.root.node_id())).unwrap();
+        assert_eq!(resolver.refresh_root().await.unwrap().root_version, 4);
+    }
+
+    #[tokio::test]
+    async fn zone_signed_by_wrong_key_rejected() {
+        let dir = tmp("wrongkey");
+        let keys = keys(&dir);
+        let attacker = NodeIdentity::load_or_create(&dir.join("attacker")).unwrap();
+        let forged = {
+            let atk = Keys {
+                root: attacker,
+                operator: NodeIdentity::load_or_create(&dir.join("atk-op")).unwrap(),
+            };
+            signed_zone(&atk, 99, BTreeMap::new())
+        };
+        let base = serve_zone(forged).await;
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let resolver =
+            Resolver::new(NodeClient::new(&base), &data_dir, Some(keys.root.node_id())).unwrap();
+        // No cache to fall back to: refresh must fail, never accept.
+        assert!(resolver.refresh_root().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_domain_not_resolved_offline_from_verified_cache() {
+        let dir = tmp("expired");
+        let keys = keys(&dir);
+        let past = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        let future = (chrono::Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+        let mut domains = BTreeMap::new();
+        domains.insert(
+            "old.fed".to_string(),
+            signed_domain(&keys, "old.fed", Some(past)),
+        );
+        domains.insert(
+            "live.fed".to_string(),
+            signed_domain(&keys, "live.fed", Some(future)),
+        );
+        let zone = signed_zone(&keys, 1, domains);
+
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        RootCache::new(&data_dir).store(&zone).unwrap();
+        // Unreachable bootstrap: resolution runs from the verified disk cache.
+        let resolver = Resolver::new(
+            NodeClient::new("http://127.0.0.1:1"),
+            &data_dir,
+            Some(keys.root.node_id()),
+        )
+        .unwrap();
+
+        match resolver.resolve("old.fed", "/").await.unwrap() {
+            Resolved::DomainUnavailable { status, .. } => assert_eq!(status, "expired"),
+            other => panic!("expired domain must not resolve, got {other:?}"),
+        }
+        // The live domain passes the record layer (fails later only because
+        // its manifest isn't fetchable in this offline test).
+        assert!(resolver.resolve_domain("live.fed").await.is_ok());
+        assert!(resolver.resolve_domain("old.fed").await.is_err());
+
+        // Unknown TLD and malformed hosts fail cleanly.
+        assert!(matches!(
+            resolver.resolve("x.doesnotexist", "/").await.unwrap(),
+            Resolved::TldNotFound { .. }
+        ));
+        assert!(matches!(
+            resolver.resolve("not a host!!", "/").await.unwrap(),
+            Resolved::NotFederate { .. }
+        ));
     }
 }

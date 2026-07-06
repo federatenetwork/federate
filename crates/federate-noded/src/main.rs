@@ -1,4 +1,4 @@
-//! federate-noded — generic Federate participant node.
+//! federate-noded: generic Federate participant node.
 //!
 //! Runs one or more roles from a config file (or --roles override):
 //! gateway, dns, storage, cdn, search, bootstrap, root-mirror.
@@ -227,7 +227,7 @@ async fn serve_block(
 async fn serve_root_mirror(
     State(s): State<Arc<MirrorState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // Serve only the locally *verified* zone — a mirror can distribute but
+    // Serve only the locally *verified* zone; a mirror can distribute but
     // never modify root data (clients re-verify the signature anyway).
     match s.resolver.root().await {
         Ok(zone) => Ok(Json(serde_json::to_value(&*zone).unwrap())),

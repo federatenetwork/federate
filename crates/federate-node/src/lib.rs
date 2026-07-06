@@ -1,4 +1,4 @@
-//! federate-node — generic node runtime shared by every Federate daemon.
+//! federate-node: generic node runtime shared by every Federate daemon.
 //!
 //! Handles: config file, node identity, signed registration with the node
 //! directory, periodic re-registration (heartbeat), and the standard health
@@ -143,6 +143,13 @@ impl NodeRuntime {
     /// the public base URL of this node's health API.
     pub fn build_registration(&self) -> Result<NodeRegistration> {
         let port = self.config.node.listen.rsplit(':').next().unwrap_or("8080");
+        // IPv6 hosts need brackets in URLs.
+        let ip = &self.config.node.public_ip;
+        let host = if ip.contains(':') {
+            format!("[{ip}]")
+        } else {
+            ip.clone()
+        };
         let mut reg = NodeRegistration {
             node_id: self.node_id(),
             public_key: self.node_id(),
@@ -151,7 +158,7 @@ impl NodeRuntime {
             region: self.config.node.region.clone(),
             version: NODE_VERSION.into(),
             capacity: self.config.capacity.clone(),
-            health_endpoint: format!("http://{}:{}", self.config.node.public_ip, port),
+            health_endpoint: format!("http://{host}:{port}"),
             registered_at: chrono::Utc::now().to_rfc3339(),
             signature_algorithm: "ed25519".into(),
             signature: None,
@@ -238,6 +245,29 @@ mod tests {
         let rt = NodeRuntime::new(cfg.clone()).unwrap();
         let reg = rt.build_registration().unwrap();
         assert!(reg.verify().is_ok());
+        std::fs::remove_dir_all(cfg.data_dir()).ok();
+    }
+
+    #[test]
+    fn ipv6_registration_builds_bracketed_health_endpoint() {
+        let mut cfg: NodeConfig = toml::from_str(
+            r#"
+            [node]
+            roles = ["gateway"]
+            region = "br-sp"
+            public_ip = "2001:db8::1"
+
+            [network]
+            bootstrap = "https://federate.network"
+            "#,
+        )
+        .unwrap();
+        cfg.node.data_dir =
+            Some(std::env::temp_dir().join(format!("fed-node-v6-{}", std::process::id())));
+        let rt = NodeRuntime::new(cfg.clone()).unwrap();
+        let reg = rt.build_registration().unwrap();
+        assert_eq!(reg.health_endpoint, "http://[2001:db8::1]:8080");
+        assert!(reg.verify().is_ok(), "bracketed v6 endpoint must verify");
         std::fs::remove_dir_all(cfg.data_dir()).ok();
     }
 }

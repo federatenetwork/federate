@@ -1,4 +1,4 @@
-//! federate-searchd — Federate search node.
+//! federate-searchd: Federate search node.
 //!
 //! Indexes public Federate pages through the signature-verifying resolution
 //! engine and exposes /v1/search. No ads, no tracking, no AI training;

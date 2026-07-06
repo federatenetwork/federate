@@ -1,4 +1,4 @@
-//! federate-root — the Federate Root Registry layer.
+//! federate-root: the Federate Root Registry layer.
 //!
 //! Root zone types, TLD records, blocklists, signing/verification, cache.
 //!
@@ -42,7 +42,7 @@ pub struct TldRecord {
     /// Hash of the policy document governing this TLD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_hash: Option<String>,
-    /// Pricing metadata placeholder (future marketplace — no payments yet).
+    /// Pricing metadata placeholder (future marketplace; no payments yet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<serde_json::Value>,
     pub created_at: String,
@@ -58,6 +58,13 @@ pub struct TldRecord {
 }
 
 impl TldRecord {
+    /// Whether this TLD's lease has expired. Checked at resolution time in
+    /// addition to `status`; a signed record stays crypto-valid after its
+    /// expiry passes, so status alone is not enough.
+    pub fn is_expired(&self) -> bool {
+        federate_naming::expired(self.expires_at.as_deref())
+    }
+
     pub fn signable_bytes(&self) -> Result<Vec<u8>> {
         let mut unsigned = self.clone();
         unsigned.signature = None;
@@ -111,12 +118,12 @@ pub struct RootZone {
     pub root_version: u64,
     pub generated_at: String,
     /// The Federate Root public key (hex). Daemons pin/verify against a
-    /// configured trust anchor — this field is informational + for TOFU.
+    /// configured trust anchor; this field is informational + for TOFU.
     pub root_public_key: String,
     /// tld name -> signed TLD record
     pub tlds: BTreeMap<String, TldRecord>,
     /// fqdn -> signed domain record (root-managed registries only; delegated
-    /// TLD domains live in the operator's registry — future phases).
+    /// TLD domains live in the operator's registry, future phases).
     pub domains: BTreeMap<String, DomainRecord>,
     /// Audit trail of root governance actions.
     #[serde(default)]
@@ -211,7 +218,7 @@ impl BlockReason {
     pub fn describe(self) -> &'static str {
         match self {
             BlockReason::PublicIana => {
-                "it is a public IANA/ICANN TLD (blocked_tlds.txt) — Federate never collides with the normal internet"
+                "it is a public IANA/ICANN TLD (blocked_tlds.txt); Federate never collides with the normal internet"
             }
             BlockReason::Reserved => {
                 "it is reserved for Federate infrastructure, governance, safety, or future use"
@@ -242,8 +249,8 @@ fn load_list(path: &Path) -> Result<HashSet<String>> {
 }
 
 impl Blocklists {
-    /// Load from `blocked_tlds_path` (authoritative IANA list — must exist)
-    /// and `blocked_dir` (reserved/policy/brand-safety — created with
+    /// Load from `blocked_tlds_path` (authoritative IANA list; must exist)
+    /// and `blocked_dir` (reserved/policy/brand-safety; created with
     /// defaults when missing).
     pub fn load(blocked_tlds_path: &Path, blocked_dir: &Path) -> Result<Self> {
         let iana = load_list(blocked_tlds_path).map_err(|e| {
@@ -340,7 +347,11 @@ impl RootCache {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&self.path, serde_json::to_vec_pretty(zone)?)?;
+        // Write-then-rename so a crash mid-write can never leave a truncated
+        // zone where the last good cache used to be.
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(zone)?)?;
+        std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 
@@ -358,8 +369,11 @@ mod tests {
         std::env::temp_dir().join(format!("fed-root-test-{name}-{}", std::process::id()))
     }
 
-    fn blocklists() -> Blocklists {
-        let dir = tmp("bl");
+    // `name` must be unique per test: the test harness runs tests on parallel
+    // threads, and a shared dir means one test can read blocked_tlds.txt while
+    // another is still writing it (observed as a flaky BlockedTld assertion).
+    fn blocklists(name: &str) -> Blocklists {
+        let dir = tmp(name);
         std::fs::create_dir_all(&dir).unwrap();
         let iana = dir.join("blocked_tlds.txt");
         std::fs::write(&iana, "COM\nNET\nORG\nBR\nDEV\nAPP\nLIVE\nPAGE\n").unwrap();
@@ -392,7 +406,7 @@ mod tests {
 
     #[test]
     fn iana_blocklist_rejects_public_tlds() {
-        let bl = blocklists();
+        let bl = blocklists("bl-iana");
         for t in ["com", "net", "org", "br", "dev", "app", "live", "page"] {
             assert!(matches!(
                 bl.validate_new_tld(t, false),
@@ -404,7 +418,7 @@ mod tests {
 
     #[test]
     fn reserved_and_policy_lists_reject() {
-        let bl = blocklists();
+        let bl = blocklists("bl-reserved");
         assert!(matches!(
             bl.validate_new_tld("root", false),
             Err(FederateError::ReservedTld { .. })
@@ -452,6 +466,44 @@ mod tests {
 
         // wrong trust anchor fails
         assert!(zone.verify(&"22".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn root_cache_roundtrip_and_corruption_recovery() {
+        let root = NodeIdentity::load_or_create(&tmp("cachekey")).unwrap();
+        let mut tlds = BTreeMap::new();
+        tlds.insert(
+            "fed".to_string(),
+            make_tld(&root, "fed", TldStatus::Official, TldMode::Official),
+        );
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 7,
+            generated_at: "t".into(),
+            root_public_key: root.node_id(),
+            tlds,
+            domains: BTreeMap::new(),
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(root.sign(&zone.signable_bytes().unwrap()));
+
+        let dir = tmp("cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = RootCache::new(&dir);
+        cache.store(&zone).unwrap();
+        let loaded = cache.load().unwrap();
+        assert_eq!(loaded.root_version, 7);
+        assert!(loaded.verify(&root.node_id()).is_ok());
+
+        // Corrupt the cache file: load must fail cleanly, not panic.
+        std::fs::write(cache.path(), b"{ definitely not a zone").unwrap();
+        assert!(cache.load().is_err());
+        // Storing again repairs it.
+        cache.store(&zone).unwrap();
+        assert!(cache.load().is_ok());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

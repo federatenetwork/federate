@@ -1,4 +1,4 @@
-//! federate-search — indexing and querying public Federate pages.
+//! federate-search: indexing and querying public Federate pages.
 //!
 //! Policy (non-negotiable, applies to the official node and any third-party
 //! search node claiming Federate compliance):
@@ -22,16 +22,27 @@ pub const POLICY_NO_AI_TRAINING: bool = true;
 // Opt-out + HTML extraction
 // ---------------------------------------------------------------------------
 
-/// Whether a page opted out of indexing.
+/// Whether a page opted out of indexing. Quote style and attribute spacing
+/// must not matter: `<meta name=robots content=noindex>`, single quotes, and
+/// extra whitespace all count.
 pub fn opted_out(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     for tag in lower.split('<') {
         if !tag.starts_with("meta") {
             continue;
         }
-        let is_robots = tag.contains(r#"name="robots""#) || tag.contains("name='robots'");
-        let is_federate = tag.contains(r#"name="federate""#) || tag.contains("name='federate'");
-        if (is_robots || is_federate) && tag.contains("noindex") {
+        let tag = match tag.find('>') {
+            Some(end) => &tag[..end],
+            None => tag,
+        };
+        // Normalize away quotes and whitespace so attribute style is irrelevant.
+        let normalized: String = tag
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+            .collect();
+        let is_robots = normalized.contains("name=robots");
+        let is_federate = normalized.contains("name=federate");
+        if (is_robots || is_federate) && normalized.contains("noindex") {
             return true;
         }
     }
@@ -240,7 +251,11 @@ pub fn router(index: Arc<RwLock<SearchIndex>>) -> axum::Router {
         State(index): State<Arc<RwLock<SearchIndex>>>,
         Query(q): Query<HashMap<String, String>>,
     ) -> Json<serde_json::Value> {
-        let query = q.get("q").cloned().unwrap_or_default();
+        // Cap query length: search work should never scale with attacker input.
+        let query: String = q
+            .get("q")
+            .map(|s| s.chars().take(256).collect())
+            .unwrap_or_default();
         let results = index.read().await.search(&query, 20);
         Json(serde_json::json!({
             "query": query,
@@ -280,5 +295,37 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].domain, "home.fed");
         assert_eq!(results[0].title, "Federate Home");
+    }
+
+    #[test]
+    fn optout_matches_all_attribute_styles() {
+        // double quotes, single quotes, unquoted, spaced, robots and federate
+        for html in [
+            r#"<meta name="federate" content="noindex">"#,
+            r#"<meta name='robots' content='noindex'>"#,
+            "<meta name=robots content=noindex>",
+            "<meta   name = \"robots\"   content = \"noindex, nofollow\" >",
+            r#"<META NAME="FEDERATE" CONTENT="NOINDEX">"#,
+        ] {
+            assert!(opted_out(html), "should opt out: {html}");
+        }
+        // pages that do NOT opt out
+        for html in [
+            r#"<meta name="robots" content="index, follow">"#,
+            r#"<meta name="description" content="noindex is a word here">"#,
+            "<p>noindex</p>",
+        ] {
+            assert!(!opted_out(html), "should not opt out: {html}");
+        }
+    }
+
+    #[test]
+    fn strip_tags_drops_scripts_and_escapes_nothing_raw() {
+        let text = strip_tags(
+            "<html><script>alert('evil')</script><style>body{}</style><b>olá mundo</b></html>",
+        );
+        assert!(!text.contains("alert"));
+        assert!(!text.contains("body{}"));
+        assert!(text.contains("olá mundo"));
     }
 }

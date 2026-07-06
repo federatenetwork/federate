@@ -1,8 +1,8 @@
-//! federate-dns — authoritative Federate DNS server.
+//! federate-dns: authoritative Federate DNS server.
 //!
 //! Behavior:
 //! - loads the signed root zone (verified against the pinned root key) via
-//!   the shared resolution engine — DNS never trusts unverified root data
+//!   the shared resolution engine; DNS never trusts unverified root data
 //! - answers names under valid Federate TLDs (`.fed`, `.pagina`, `.rosa`,
 //!   `.cara`, `.mosca`, `.busca`, and anything else in the signed root zone)
 //!   with the IPs of *multiple healthy gateway nodes* from the node directory
@@ -25,6 +25,10 @@ use wire::{DnsQuery, QueryType};
 
 pub const DEFAULT_TTL_SECS: u32 = 30;
 pub const DEFAULT_UPSTREAM: &str = "1.1.1.1:53";
+/// Max A/AAAA records per answer. Keeps plain-UDP responses safely under the
+/// classic 512-byte limit (we do not speak TCP or EDNS yet); 8 gateways is
+/// plenty for failover.
+pub const MAX_ANSWERS: usize = 8;
 
 pub struct DnsServer {
     /// Shared, signature-verifying resolution engine (root zone source).
@@ -56,7 +60,7 @@ impl DnsServer {
         self.gateways.read().await.clone()
     }
 
-    /// Refresh healthy gateways from the node directory (best first — the
+    /// Refresh healthy gateways from the node directory (best first; the
     /// directory ranks by health then latency).
     pub async fn refresh_gateways(&self) {
         match self.directory.list(Some(NodeRole::Gateway), true).await {
@@ -80,7 +84,7 @@ impl DnsServer {
         match self.resolver.root().await {
             Ok(zone) => zone
                 .lookup_tld(&tld)
-                .map(|rec| rec.status.is_resolvable())
+                .map(|rec| rec.status.is_resolvable() && !rec.is_expired())
                 .unwrap_or(false),
             Err(e) => {
                 tracing::error!("no verified root zone available: {e}");
@@ -142,13 +146,18 @@ impl DnsServer {
             // Answer with multiple healthy gateway IPs, low TTL.
             let ips = self.gateway_ips().await;
             let (v4, v6): (Vec<IpAddr>, Vec<IpAddr>) = ips.into_iter().partition(|ip| ip.is_ipv4());
-            let answers = match query.qtype {
+            let mut answers = match query.qtype {
                 QueryType::A => v4,
                 QueryType::Aaaa => v6,
                 QueryType::Other(_) => vec![],
             };
+            // Cap answers so the response always fits a plain 512-byte UDP reply.
+            answers.truncate(MAX_ANSWERS);
             if answers.is_empty() && matches!(query.qtype, QueryType::A) {
-                tracing::warn!("no healthy gateways to answer {} — SERVFAIL", query.name);
+                tracing::warn!(
+                    "no healthy gateways to answer {}; answering SERVFAIL",
+                    query.name
+                );
                 return Some(wire::build_servfail(packet, &query));
             }
             tracing::debug!(
@@ -170,7 +179,7 @@ impl DnsServer {
     /// Forward a query to the configured upstream resolver. The socket is
     /// `connect`ed to upstream so the kernel drops datagrams from any other
     /// source, and we additionally require the reply's transaction ID to match
-    /// the query — together these block off-path answer spoofing.
+    /// the query; together these block off-path answer spoofing.
     async fn forward_upstream(&self, packet: &[u8], query_id: u16) -> Option<Vec<u8>> {
         let bind = if self.upstream.is_ipv6() {
             "[::]:0"

@@ -1,9 +1,11 @@
 # Internal HTTPS & Local Federate Root CA (Planned)
 
+> [Versão em português (pt-BR)](pt-BR/https-local.md)
+
 ## MVP position
 
 The MVP flow is `http://home.fed`. Public `https://federate.network` uses
-normal Let's Encrypt (real public domain, handled by Caddy — see
+normal Let's Encrypt (real public domain, handled by Caddy; see
 [deployment-hetzner.md](deployment-hetzner.md)).
 
 Internal domains (`home.fed`, `joao.pagina`, `fotolia.rosa`, `arcade.mosca`, …)
@@ -34,7 +36,7 @@ The desktop installer will:
 
 Design notes:
 
-- Per-machine CA (not a shared network CA) — compromise of one machine never
+- Per-machine CA (not a shared network CA) - compromise of one machine never
   affects others, and no CA private key is ever distributed.
 - Certificate minting lives beside the gateway, reusing `federate-identity`
   for key handling; resolution stays untouched in `federate-resolution`.
