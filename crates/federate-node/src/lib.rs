@@ -158,6 +158,15 @@ impl NodeRuntime {
         } else {
             ip.clone()
         };
+        // Advertise the native protocol listener so peers can prefer the
+        // native transport over HTTP compatibility.
+        let native_port: Option<u16> = self
+            .config
+            .node
+            .native_listen
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse().ok());
         let mut reg = NodeRegistration {
             node_id: self.node_id(),
             public_key: self.node_id(),
@@ -167,6 +176,7 @@ impl NodeRuntime {
             version: NODE_VERSION.into(),
             capacity: self.config.capacity.clone(),
             health_endpoint: format!("http://{host}:{port}"),
+            native_port,
             registered_at: chrono::Utc::now().to_rfc3339(),
             signature_algorithm: "ed25519".into(),
             signature: None,

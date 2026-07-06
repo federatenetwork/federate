@@ -34,7 +34,10 @@ outros com segurança.
 
 ## Modelo de conteúdo
 
-Conteúdo é endereçado por hash e servido por quem o tiver. Hoje: origem +
+Conteúdo é endereçado por hash e servido por quem o tiver. O fetch prefere
+o transporte do próprio overlay: cache local, depois providers do protocolo
+nativo, depois providers de compatibilidade HTTP, depois a origem HTTP
+([native-protocol.md](native-protocol.md)). Hoje: origem +
 CDN fetch-on-miss + anúncios de provider assinados + caches LRU. O modelo se
 estende a replicação, pinning e seleção do provider mais próximo sem novas
 decisões de confiança, porque a identidade de um bloco É seu hash:

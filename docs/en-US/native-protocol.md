@@ -80,6 +80,24 @@ key and content addresses, exactly like the HTTP path. The protocol moves
 bytes; signatures decide what is valid. A malicious node can refuse to
 answer; it cannot forge an answer that verifies.
 
+## The native fetch path
+
+Content fetching prefers the native protocol. When a resolver needs a block:
+
+1. **local cache** (hash re-verified on read)
+2. **native providers**: directory-announced nodes that declared a
+   `native_port`, best-ranked first, then any configured default native
+   providers
+3. **HTTP providers**: the same nodes' compatibility endpoints
+4. **HTTP origin** (Node 1): compatibility fallback of last resort
+
+A provider is an **untrusted distributor**: a forged answer fails hash
+verification and the fetch moves to the next provider. Failing everything
+native falls back to HTTP; failing everything returns an error, never
+unverified bytes. `federate fetch fed://... --trace` prints each step,
+including which transport actually delivered the bytes;
+`federate providers <hash>` lists announced providers and their transports.
+
 ## Serving it
 
 `federate-noded` listens natively on `native_listen` (default

@@ -79,6 +79,36 @@ pub struct Resolver {
     /// provider response is hash-verified; providers are never trusted.
     directory: Option<federate_directory::DirectoryClient>,
     region: Option<String>,
+    /// Default native-protocol providers tried when directory data has no
+    /// (or not enough) native providers, e.g. Node 1's own noded.
+    native_providers: Vec<std::net::SocketAddr>,
+    /// This client's identity for native protocol handshakes (identity, not
+    /// authority: what we fetch is still verified by hash/signature).
+    identity: federate_identity::NodeIdentity,
+}
+
+/// Ordered fetch trace for diagnostics (`federate fetch --trace`). Collects
+/// one line per meaningful step; cheap no-op when absent.
+#[derive(Default)]
+pub struct Trace(std::sync::Mutex<Vec<String>>);
+
+impl Trace {
+    pub fn push(&self, event: impl Into<String>) {
+        self.0.lock().unwrap().push(event.into());
+    }
+    pub fn events(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+fn trace(t: Option<&Trace>, event: impl Into<String>) {
+    if let Some(t) = t {
+        t.push(event);
+    }
+}
+
+fn short(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
 }
 
 impl Resolver {
@@ -110,6 +140,8 @@ impl Resolver {
             trusted_key_path,
             directory: None,
             region: None,
+            native_providers: Vec::new(),
+            identity: federate_identity::NodeIdentity::load_or_create(data_dir)?,
         })
     }
 
@@ -121,6 +153,14 @@ impl Resolver {
     ) -> Self {
         self.directory = Some(directory);
         self.region = region;
+        self
+    }
+
+    /// Default native-protocol providers, tried in the native pass after any
+    /// directory-discovered native providers (e.g. Node 1's own noded for
+    /// official content).
+    pub fn with_native_providers(mut self, providers: Vec<std::net::SocketAddr>) -> Self {
+        self.native_providers = providers;
         self
     }
 
@@ -264,36 +304,159 @@ impl Resolver {
     }
 
     async fn block(&self, hash: &str) -> Result<Vec<u8>> {
-        // BlockStore::get re-verifies the hash and fails on tampered cache;
-        // tampered entries are removed so the next fetch can repair them.
+        self.block_traced(hash, None).await
+    }
+
+    /// Block fetch with the provider preference order of the overlay:
+    ///
+    ///   1. local cache (hash re-verified on read)
+    ///   2. native-protocol providers (directory-discovered, then defaults)
+    ///   3. HTTP providers (CDN/storage/origin compatibility endpoints)
+    ///   4. Node 1 over HTTP (compatibility fallback of last resort)
+    ///
+    /// Every source is untrusted: bytes count only after they hash to the
+    /// requested content address. Transports carry bytes, not trust.
+    async fn block_traced(&self, hash: &str, t: Option<&Trace>) -> Result<Vec<u8>> {
+        // 1. Local cache. BlockStore::get re-verifies the hash and fails on
+        // tampered cache; tampered entries are evicted for repair on refetch.
         match self.blocks.get(hash) {
-            Ok(bytes) => return Ok(bytes),
+            Ok(bytes) => {
+                trace(
+                    t,
+                    format!("block {}: local cache hit (hash verified)", short(hash)),
+                );
+                return Ok(bytes);
+            }
             Err(FederateError::HashMismatch { .. }) => {
                 tracing::warn!("cached block {hash} failed hash validation; evicting");
+                trace(
+                    t,
+                    format!("block {}: tampered cache entry evicted", short(hash)),
+                );
             }
-            Err(_) => {}
+            Err(_) => trace(t, format!("block {}: not in local cache", short(hash))),
         }
-        // Try CDN/storage/origin providers from the node directory first.
-        if let Some(dir) = &self.directory {
-            if let Ok(providers) = dir.providers(hash, None).await {
-                for provider in federate_cdn::rank_providers(&providers, self.region.as_deref()) {
-                    match federate_cdn::fetch_block_from(provider, hash).await {
-                        Ok(bytes) => {
-                            self.blocks.put(hash, &bytes)?;
-                            return Ok(bytes);
-                        }
-                        Err(e) => tracing::debug!(
-                            "provider {} failed for block {hash}: {e}",
-                            provider.registration.node_id
+
+        // Discover providers through the directory (advisory data only).
+        let entries: Vec<federate_directory::NodeEntry> = match &self.directory {
+            Some(dir) => dir.providers(hash, None).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let ranked = federate_cdn::rank_providers(&entries, self.region.as_deref());
+
+        // 2. Native pass: providers that speak the Federate protocol, best
+        // ranked first, then the configured default native providers.
+        let mut native: Vec<(String, std::net::SocketAddr)> = ranked
+            .iter()
+            .filter_map(|p| p.native_addr().map(|a| (p.registration.node_id.clone(), a)))
+            .collect();
+        for addr in &self.native_providers {
+            if !native.iter().any(|(_, a)| a == addr) {
+                native.push(("default-provider".into(), *addr));
+            }
+        }
+        for (node_id, addr) in &native {
+            match self.fetch_block_native(*addr, hash).await {
+                Ok(bytes) => {
+                    self.blocks.put(hash, &bytes)?;
+                    trace(
+                        t,
+                        format!(
+                            "block {}: fetched over NATIVE protocol from {} at {addr}, hash verified",
+                            short(hash),
+                            short(node_id),
                         ),
-                    }
+                    );
+                    return Ok(bytes);
+                }
+                Err(e) => {
+                    tracing::debug!("native provider {node_id} ({addr}) failed for {hash}: {e}");
+                    trace(
+                        t,
+                        format!(
+                            "block {}: native provider {addr} failed ({e}); trying next",
+                            short(hash)
+                        ),
+                    );
                 }
             }
         }
-        // Fall back to Node 1 (origin of official content).
+
+        // 3. HTTP provider pass (compatibility surface of the same nodes).
+        for provider in &ranked {
+            match federate_cdn::fetch_block_from(provider, hash).await {
+                Ok(bytes) => {
+                    self.blocks.put(hash, &bytes)?;
+                    trace(
+                        t,
+                        format!(
+                            "block {}: fetched over HTTP compatibility from provider {}, hash verified",
+                            short(hash),
+                            short(&provider.registration.node_id),
+                        ),
+                    );
+                    return Ok(bytes);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "provider {} failed for block {hash}: {e}",
+                        provider.registration.node_id
+                    );
+                    trace(
+                        t,
+                        format!(
+                            "block {}: http provider failed ({e}); trying next",
+                            short(hash)
+                        ),
+                    );
+                }
+            }
+        }
+
+        // 4. Node 1 over HTTP (origin of official content, last resort).
+        trace(
+            t,
+            format!(
+                "block {}: falling back to origin over HTTP compatibility",
+                short(hash)
+            ),
+        );
         let bytes = self.client.fetch_block(hash).await?;
         self.blocks.put(hash, &bytes)?;
+        trace(
+            t,
+            format!("block {}: fetched from origin, hash verified", short(hash)),
+        );
         Ok(bytes)
+    }
+
+    /// One native-protocol block fetch: connect, handshake, GetBlock, verify
+    /// the bytes against the content address. The provider is untrusted; a
+    /// wrong-bytes answer fails verification here and the caller moves on.
+    async fn fetch_block_native(&self, addr: std::net::SocketAddr, hash: &str) -> Result<Vec<u8>> {
+        if !federate_storage::is_valid_hash(hash) {
+            return Err(FederateError::BlockNotFound(hash.to_string()));
+        }
+        let agent = concat!("federate-resolution/", env!("CARGO_PKG_VERSION"));
+        let (mut conn, _welcome) =
+            federate_transport::Connection::connect(addr, &self.identity, agent).await?;
+        match conn
+            .request(&federate_protocol::Message::GetBlock {
+                hash: hash.to_string(),
+            })
+            .await?
+        {
+            federate_protocol::Message::Block { bytes, .. } => {
+                federate_storage::verify(&bytes, hash)?;
+                Ok(bytes)
+            }
+            federate_protocol::Message::Error { code, detail } => Err(FederateError::Network(
+                format!("native provider answered {code:?}: {detail}"),
+            )),
+            other => Err(FederateError::Network(format!(
+                "native provider answered unexpectedly: {other:?}"
+            ))),
+        }
     }
 
     /// Fetch a block by hash (providers first, then Node 1) and cache it.
@@ -354,7 +517,25 @@ impl Resolver {
     /// `fed://joao.pagina/about` and an HTTP request with Host
     /// `joao.pagina` + path `/about` resolve through exactly this call.
     pub async fn resolve_uri(&self, uri: &federate_uri::FederateUri) -> Result<Resolved> {
-        self.resolve(&uri.fqdn(), &uri.path).await
+        self.resolve_traced_inner(&uri.fqdn(), &uri.path, None)
+            .await
+    }
+
+    /// [`Resolver::resolve_uri`] with step-by-step diagnostics collected
+    /// into `trace` (used by `federate fetch --trace`). Same verification,
+    /// same outcomes; the trace only observes.
+    pub async fn resolve_uri_traced(
+        &self,
+        uri: &federate_uri::FederateUri,
+        trace: &Trace,
+    ) -> Result<Resolved> {
+        trace.push(format!(
+            "uri parsed: {uri} (domain {}, path {})",
+            uri.fqdn(),
+            uri.path
+        ));
+        self.resolve_traced_inner(&uri.fqdn(), &uri.path, Some(trace))
+            .await
     }
 
     /// Full verified content resolution by raw host + path. Prefer
@@ -363,6 +544,15 @@ impl Resolver {
     /// tolerant compatibility surfaces that want structured outcomes
     /// (`NotFederate`, ...) instead of parse errors.
     pub async fn resolve(&self, host: &str, path: &str) -> Result<Resolved> {
+        self.resolve_traced_inner(host, path, None).await
+    }
+
+    async fn resolve_traced_inner(
+        &self,
+        host: &str,
+        path: &str,
+        t: Option<&Trace>,
+    ) -> Result<Resolved> {
         // 1-2. Parse: syntax check only. Existence comes from the root zone.
         let domain = match FederateDomain::parse(host) {
             Ok(d) => d,
@@ -390,6 +580,14 @@ impl Resolver {
             }
             Err(e) => return Err(e),
         };
+
+        trace(
+            t,
+            format!(
+                "root zone v{} verified against pinned root key",
+                root.root_version
+            ),
+        );
 
         // 4. TLD exists?
         let tld_rec = match root.lookup_tld(&domain.tld) {
@@ -427,6 +625,15 @@ impl Resolver {
                 status: "expired".to_string(),
             });
         }
+
+        trace(
+            t,
+            format!(
+                "TLD .{} record verified (root-signed, status {})",
+                domain.tld,
+                tld_rec.status.as_str()
+            ),
+        );
 
         // 6. Route by registry type.
         match tld_rec.registry_type {
@@ -476,6 +683,11 @@ impl Resolver {
             });
         }
 
+        trace(
+            t,
+            format!("domain record for {fqdn} verified (signed by TLD operator key)"),
+        );
+
         // 8. Manifest: content-addressed fetch + owner signature.
         let manifest = match self.manifest(&record.manifest_hash).await {
             Ok(m) => m,
@@ -498,6 +710,15 @@ impl Resolver {
             });
         }
 
+        trace(
+            t,
+            format!(
+                "manifest {} verified (owner-signed, {} files)",
+                short(&record.manifest_hash),
+                manifest.files.len()
+            ),
+        );
+
         // 9. Content block, hash-verified (fetch AND cache read).
         let (file_name, file_hash) = match manifest.resolve_path(path) {
             Some((name, h)) => (name, h.to_string()),
@@ -508,7 +729,14 @@ impl Resolver {
                 })
             }
         };
-        let bytes = match self.block(&file_hash).await {
+        trace(
+            t,
+            format!(
+                "path {path} -> file '{file_name}' -> block {}",
+                short(&file_hash)
+            ),
+        );
+        let bytes = match self.block_traced(&file_hash, t).await {
             Ok(b) => b,
             Err(FederateError::HashMismatch { expected, actual }) => {
                 return Ok(Resolved::SecurityFailure {
@@ -647,6 +875,323 @@ mod tests {
             axum::serve(listener, app).await.ok();
         });
         format!("http://{addr}")
+    }
+
+    // -----------------------------------------------------------------
+    // Native provider fetching
+    // -----------------------------------------------------------------
+
+    /// Test-only native node serving a fixed set of blocks.
+    struct BlockService(std::collections::HashMap<String, Vec<u8>>);
+
+    #[federate_transport::async_trait]
+    impl federate_transport::NodeService for BlockService {
+        fn node_id(&self) -> String {
+            "ff".repeat(32)
+        }
+        fn capabilities(&self) -> Vec<federate_protocol::Capability> {
+            vec![federate_protocol::Capability::Blocks]
+        }
+        async fn handle(&self, req: federate_protocol::Message) -> federate_protocol::Message {
+            match req {
+                federate_protocol::Message::GetBlock { hash } => match self.0.get(&hash) {
+                    Some(bytes) => federate_protocol::Message::Block {
+                        hash,
+                        bytes: bytes.clone(),
+                    },
+                    None => federate_protocol::Message::Error {
+                        code: federate_protocol::ErrorCode::NotFound,
+                        detail: "not held".into(),
+                    },
+                },
+                _ => federate_protocol::Message::Error {
+                    code: federate_protocol::ErrorCode::Unsupported,
+                    detail: "blocks only".into(),
+                },
+            }
+        }
+    }
+
+    /// A hostile native node: answers every GetBlock with wrong bytes.
+    struct LiarService;
+
+    #[federate_transport::async_trait]
+    impl federate_transport::NodeService for LiarService {
+        fn node_id(&self) -> String {
+            "bd".repeat(32)
+        }
+        fn capabilities(&self) -> Vec<federate_protocol::Capability> {
+            vec![federate_protocol::Capability::Blocks]
+        }
+        async fn handle(&self, req: federate_protocol::Message) -> federate_protocol::Message {
+            match req {
+                federate_protocol::Message::GetBlock { hash } => {
+                    federate_protocol::Message::Block {
+                        hash,
+                        bytes: b"forged bytes that do not match the hash".to_vec(),
+                    }
+                }
+                _ => federate_protocol::Message::Error {
+                    code: federate_protocol::ErrorCode::Unsupported,
+                    detail: "blocks only".into(),
+                },
+            }
+        }
+    }
+
+    async fn spawn_native(service: impl federate_transport::NodeService) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(federate_transport::serve(
+            listener,
+            std::sync::Arc::new(service),
+            "test-node/0".into(),
+        ));
+        addr
+    }
+
+    /// Build a fully resolvable site set offline: signed zone (cached),
+    /// owner-signed manifests (cached), one distinct content block per fqdn.
+    /// Returns (data_dir, keys, fqdn -> (block_hash, block_bytes)).
+    fn content_sites(
+        dir: &Path,
+        fqdns: &[&str],
+    ) -> (
+        PathBuf,
+        std::collections::HashMap<String, (String, Vec<u8>)>,
+    ) {
+        let keys = keys(dir);
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+        let data_dir = dir.join("data");
+        let manifest_dir = data_dir.join("manifests");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+
+        let mut tlds = BTreeMap::new();
+        let mut domains = BTreeMap::new();
+        let mut blocks = std::collections::HashMap::new();
+        for fqdn in fqdns {
+            let (label, tld) = fqdn.split_once('.').unwrap();
+            tlds.entry(tld.to_string())
+                .or_insert_with(|| signed_tld(&keys, tld));
+
+            let block = format!("<html>content of {fqdn}</html>").into_bytes();
+            let block_hash = federate_storage::hash_bytes(&block);
+
+            let mut manifest = Manifest {
+                domain: fqdn.to_string(),
+                version: 1,
+                entry: "index.html".into(),
+                files: BTreeMap::from([("index.html".to_string(), block_hash.clone())]),
+                owner_public_key: owner.node_id(),
+                created_at: "t".into(),
+                signature_algorithm: SIGNATURE_ALGORITHM.into(),
+                signature: None,
+            };
+            manifest.signature = Some(owner.sign(&manifest.signable_bytes().unwrap()));
+            let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+            let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
+            std::fs::write(manifest_dir.join(&manifest_hash), &manifest_bytes).unwrap();
+
+            let mut rec = DomainRecord {
+                domain: fqdn.to_string(),
+                tld: tld.into(),
+                label: label.into(),
+                owner_public_key: owner.node_id(),
+                target_type: TargetType::Manifest,
+                manifest_hash,
+                service_id: None,
+                node_id: None,
+                status: DomainStatus::Active,
+                created_at: "t".into(),
+                updated_at: "t".into(),
+                expires_at: None,
+                renewal: None,
+                pricing: None,
+                signature_algorithm: SIGNATURE_ALGORITHM.into(),
+                signature: None,
+            };
+            rec.signature = Some(keys.operator.sign(&rec.signable_bytes().unwrap()));
+            domains.insert(fqdn.to_string(), rec);
+            blocks.insert(fqdn.to_string(), (block_hash, block));
+        }
+
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 1,
+            generated_at: "t".into(),
+            root_public_key: keys.root.node_id(),
+            tlds,
+            domains,
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(keys.root.sign(&zone.signable_bytes().unwrap()));
+        RootCache::new(&data_dir).store(&zone).unwrap();
+        std::fs::write(data_dir.join("trusted-root-key"), keys.root.node_id()).unwrap();
+        (data_dir, blocks)
+    }
+
+    /// Native provider preferred, generically for multiple TLDs. Bootstrap
+    /// is unreachable, so HTTP fallback CANNOT be the source: success proves
+    /// the bytes came over the native protocol.
+    #[tokio::test]
+    async fn native_provider_serves_blocks_for_multiple_tlds() {
+        let dir = tmp("native-multi");
+        let fqdns = ["home.fed", "joao.pagina", "fotolia.rosa"];
+        let (data_dir, blocks) = content_sites(&dir, &fqdns);
+
+        let all: std::collections::HashMap<String, Vec<u8>> = blocks
+            .values()
+            .map(|(h, b)| (h.clone(), b.clone()))
+            .collect();
+        let provider = spawn_native(BlockService(all)).await;
+
+        let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
+            .unwrap()
+            .with_native_providers(vec![provider]);
+
+        for fqdn in fqdns {
+            let uri = federate_uri::FederateUri::parse(&format!("fed://{fqdn}")).unwrap();
+            let t = Trace::default();
+            match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+                Resolved::Content { bytes, .. } => {
+                    assert_eq!(bytes, blocks[fqdn].1, "{fqdn} content");
+                }
+                other => panic!("{fqdn} must resolve to content, got {other:?}"),
+            }
+            let log = t.events().join("\n");
+            assert!(
+                log.contains("NATIVE protocol"),
+                "{fqdn} must fetch natively:\n{log}"
+            );
+            assert!(log.contains("manifest"), "trace records manifest step");
+            assert!(log.contains("-> block"), "trace records selected block");
+        }
+    }
+
+    /// A native provider serving forged bytes is rejected by hash
+    /// verification; the next provider answers correctly.
+    #[tokio::test]
+    async fn forged_native_block_rejected_next_provider_wins() {
+        let dir = tmp("native-liar");
+        let (data_dir, blocks) = content_sites(&dir, &["site.mosca"]);
+        let (hash, bytes) = blocks["site.mosca"].clone();
+
+        let liar = spawn_native(LiarService).await;
+        let honest = spawn_native(BlockService(std::collections::HashMap::from([(
+            hash,
+            bytes.clone(),
+        )])))
+        .await;
+
+        let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
+            .unwrap()
+            .with_native_providers(vec![liar, honest]);
+
+        let uri = federate_uri::FederateUri::parse("fed://site.mosca").unwrap();
+        let t = Trace::default();
+        match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+            Resolved::Content { bytes: got, .. } => assert_eq!(got, bytes),
+            other => panic!("expected content, got {other:?}"),
+        }
+        let log = t.events().join("\n");
+        assert!(
+            log.contains("failed (hash mismatch") || log.contains("failed"),
+            "liar must be rejected in trace:\n{log}"
+        );
+        assert!(
+            log.contains("NATIVE protocol"),
+            "honest native provider used"
+        );
+    }
+
+    /// Dead native providers (connection refused) fall through to the HTTP
+    /// compatibility origin.
+    #[tokio::test]
+    async fn dead_native_providers_fall_back_to_http_origin() {
+        let dir = tmp("native-fallback");
+        let (data_dir, blocks) = content_sites(&dir, &["fed.busca"]);
+        let (hash, bytes) = blocks["fed.busca"].clone();
+
+        // HTTP origin serving the block (compatibility surface).
+        let app = axum::Router::new().route(
+            "/v1/block/:h",
+            axum::routing::get(move |axum::extract::Path(h): axum::extract::Path<String>| {
+                let (hash, bytes) = (hash.clone(), bytes.clone());
+                async move {
+                    if h == hash {
+                        Ok(bytes)
+                    } else {
+                        Err(axum::http::StatusCode::NOT_FOUND)
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        // A closed port: instant connection-refused native failure.
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+
+        let resolver = Resolver::new(NodeClient::new(&origin), &data_dir, None)
+            .unwrap()
+            .with_native_providers(vec![dead]);
+
+        let uri = federate_uri::FederateUri::parse("fed://fed.busca").unwrap();
+        let t = Trace::default();
+        match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+            Resolved::Content { bytes: got, .. } => {
+                assert_eq!(got, blocks["fed.busca"].1);
+            }
+            other => panic!("expected content via HTTP fallback, got {other:?}"),
+        }
+        let log = t.events().join("\n");
+        assert!(
+            log.contains("native provider"),
+            "dead native attempt traced:\n{log}"
+        );
+        assert!(
+            log.contains("origin over HTTP compatibility"),
+            "fallback traced:\n{log}"
+        );
+    }
+
+    /// Local cache beats every network source.
+    #[tokio::test]
+    async fn local_cache_wins_before_any_network() {
+        let dir = tmp("cache-first");
+        let (data_dir, blocks) = content_sites(&dir, &["alguem.cara"]);
+        let (hash, bytes) = blocks["alguem.cara"].clone();
+
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
+            .unwrap()
+            .with_native_providers(vec![dead]);
+        // Pre-seed the verified local cache.
+        resolver.block_store().put(&hash, &bytes).unwrap();
+
+        let uri = federate_uri::FederateUri::parse("fed://alguem.cara").unwrap();
+        let t = Trace::default();
+        match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+            Resolved::Content { bytes: got, .. } => assert_eq!(got, bytes),
+            other => panic!("expected cached content, got {other:?}"),
+        }
+        let log = t.events().join("\n");
+        assert!(log.contains("local cache hit"), "cache must win:\n{log}");
+        assert!(
+            !log.contains("NATIVE protocol"),
+            "no network needed:\n{log}"
+        );
     }
 
     /// The engine must treat every TLD generically: nothing anywhere may

@@ -124,6 +124,11 @@ pub struct NodeRegistration {
     /// Base URL of the node's health API, e.g. "http://45.1.1.1:8080".
     /// The checker GETs `{health_endpoint}/health`.
     pub health_endpoint: String,
+    /// TCP port of the node's native Federate protocol listener (usually
+    /// 4077). None means this node only speaks the HTTP compatibility
+    /// surface. Covered by the registration signature like every field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_port: Option<u16>,
     pub registered_at: String,
     pub signature_algorithm: String,
     #[serde(default)]
@@ -283,6 +288,16 @@ pub struct NodeEntry {
     pub latency_ms: Option<u64>,
     #[serde(default)]
     pub consecutive_failures: u32,
+}
+
+impl NodeEntry {
+    /// Socket address of this node's native Federate protocol listener,
+    /// when it declared one (first declared public IP + native_port).
+    pub fn native_addr(&self) -> Option<std::net::SocketAddr> {
+        let port = self.registration.native_port?;
+        let ip = self.registration.ips().into_iter().next()?;
+        Some(std::net::SocketAddr::new(ip, port))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +783,7 @@ mod tests {
                 bandwidth_mbps: 500,
             },
             health_endpoint: "http://45.1.1.1:8080".into(),
+            native_port: Some(4077),
             registered_at: "t".into(),
             signature_algorithm: "ed25519".into(),
             signature: None,
@@ -831,6 +847,7 @@ mod tests {
             version: "0.1.0".into(),
             capacity: NodeCapacity::default(),
             health_endpoint: format!("http://{ip}:8080"),
+            native_port: Some(4077),
             registered_at: "t".into(),
             signature_algorithm: "ed25519".into(),
             signature: None,

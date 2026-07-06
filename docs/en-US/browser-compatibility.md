@@ -45,6 +45,14 @@ native client  ----------fed://joao.pagina/about--------->  same engine
   need end-to-end verification run `federated` locally or a native client;
   the public gateway is convenience mode.
 
+## Native fetch vs bridge fetch
+
+The bridges are for *browsers*; Federate software prefers the native path.
+`federate fetch fed://home.fed/ --trace` shows the order live: local cache,
+native-protocol providers (port 4077), HTTP providers, HTTP origin. HTTP is
+the fallback of last resort, and every source (native or HTTP) is an
+untrusted distributor whose bytes count only after hash verification.
+
 ## Direction
 
 Bridges stay for as long as normal browsers exist. The native path

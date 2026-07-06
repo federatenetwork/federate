@@ -18,8 +18,10 @@ tracing = { workspace = true }
 federate-directory = { workspace = true }
 federate-cdn = { workspace = true }
 federate-uri = { workspace = true }
+federate-identity = { workspace = true }
+federate-protocol = { workspace = true }
+federate-transport = { workspace = true }
 
 [dev-dependencies]
-federate-identity = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }

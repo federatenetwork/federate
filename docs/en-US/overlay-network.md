@@ -34,7 +34,10 @@ other content safely.
 
 ## Content model
 
-Content is addressed by hash and served by whoever has it. Today: origin +
+Content is addressed by hash and served by whoever has it. Fetching
+prefers the overlay's own transport: local cache, then native-protocol
+providers, then HTTP compatibility providers, then the HTTP origin
+([native-protocol.md](native-protocol.md)). Today: origin +
 CDN fetch-on-miss + signed provider announcements + LRU caches. The model
 extends to replication, pinning, and nearest-provider selection without new
 trust decisions, because a block's identity IS its hash: replication is

@@ -49,6 +49,15 @@ cliente nativo ---------fed://joao.pagina/about--------> mesma engine
   `federated` localmente ou um cliente nativo; o gateway público é o modo
   conveniência.
 
+## Fetch nativo vs fetch pela ponte
+
+As pontes são para *navegadores*; software Federate prefere o caminho
+nativo. `federate fetch fed://home.fed/ --trace` mostra a ordem ao vivo:
+cache local, providers do protocolo nativo (porta 4077), providers HTTP,
+origem HTTP. HTTP é o fallback de último recurso, e toda fonte (nativa ou
+HTTP) é um distribuidor não confiável cujos bytes só valem depois da
+verificação de hash.
+
 ## Direção
 
 As pontes ficam enquanto navegadores normais existirem. O caminho nativo

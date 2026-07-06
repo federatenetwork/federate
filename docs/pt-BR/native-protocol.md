@@ -83,6 +83,26 @@ caminho HTTP. O protocolo move bytes; assinaturas decidem o que é válido.
 Um nó malicioso pode se recusar a responder; não consegue forjar uma
 resposta que verifique.
 
+## O caminho nativo de fetch
+
+A busca de conteúdo prefere o protocolo nativo. Quando um resolvedor precisa
+de um bloco:
+
+1. **cache local** (hash re-verificado na leitura)
+2. **providers nativos**: nós anunciados no diretório que declararam
+   `native_port`, melhores primeiro, depois providers nativos padrão
+   configurados
+3. **providers HTTP**: os endpoints de compatibilidade dos mesmos nós
+4. **origem HTTP** (Node 1): fallback de compatibilidade de último recurso
+
+Um provider é um **distribuidor não confiável**: uma resposta forjada falha
+na verificação de hash e o fetch passa ao próximo provider. Falhando tudo
+que é nativo, cai para HTTP; falhando tudo, retorna erro, nunca bytes não
+verificados. `federate fetch fed://... --trace` imprime cada passo,
+incluindo qual transporte de fato entregou os bytes;
+`federate providers <hash>` lista os providers anunciados e seus
+transportes.
+
 ## Servindo o protocolo
 
 O `federate-noded` escuta nativamente em `native_listen` (padrão

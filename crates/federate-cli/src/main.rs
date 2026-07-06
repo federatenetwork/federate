@@ -44,7 +44,15 @@ enum Cmd {
         /// Pinned Federate Root public key (hex)
         #[arg(long)]
         root_key: Option<String>,
+        /// Print each resolution/fetch step (providers, transport, checks)
+        #[arg(long)]
+        trace: bool,
+        /// Native protocol provider to prefer, ip:port (repeatable)
+        #[arg(long = "provider")]
+        providers: Vec<std::net::SocketAddr>,
     },
+    /// List known providers for a content block hash
+    Providers { hash: String },
     /// Root registry commands
     Root {
         #[command(subcommand)]
@@ -344,8 +352,10 @@ async fn fetch_cmd(
     uri: federate_uri::FederateUri,
     output: Option<std::path::PathBuf>,
     root_key: Option<String>,
+    trace_on: bool,
+    native_providers: Vec<std::net::SocketAddr>,
 ) {
-    use federate_resolution::{Resolved, Resolver};
+    use federate_resolution::{Resolved, Resolver, Trace};
     let data_dir = DaemonConfig::default_data_dir();
     std::fs::create_dir_all(&data_dir).ok();
     let resolver = Resolver::new(
@@ -353,8 +363,24 @@ async fn fetch_cmd(
         &data_dir,
         root_key,
     )
-    .unwrap_or_else(|e| die(&format!("cannot initialize resolver: {e}")));
-    match resolver.resolve_uri(&uri).await {
+    .unwrap_or_else(|e| die(&format!("cannot initialize resolver: {e}")))
+    .with_directory(
+        federate_directory::DirectoryClient::new(&cli.bootstrap),
+        None,
+    )
+    .with_native_providers(native_providers);
+    let trace = Trace::default();
+    let outcome = if trace_on {
+        resolver.resolve_uri_traced(&uri, &trace).await
+    } else {
+        resolver.resolve_uri(&uri).await
+    };
+    if trace_on {
+        for step in trace.events() {
+            eprintln!("  -> {step}");
+        }
+    }
+    match outcome {
         Ok(Resolved::Content {
             bytes, mime, hash, ..
         }) => {
@@ -431,7 +457,10 @@ async fn main() {
             uri,
             output,
             root_key,
-        } => fetch_cmd(&cli, parse_target(&uri), output, root_key).await,
+            trace,
+            providers,
+        } => fetch_cmd(&cli, parse_target(&uri), output, root_key, trace, providers).await,
+        Cmd::Providers { hash } => providers_cmd(&cli, &hash).await,
         Cmd::Root { cmd } => root_cmd(&cli, cmd).await,
         Cmd::Tlds | Cmd::Tld { cmd: TldCmd::List } => match fetch_root(&cli.bootstrap).await {
             Ok(zone) => {
@@ -900,6 +929,47 @@ async fn node_cmd(cli: &Ctx, cmd: NodeCmd) {
                 )),
             }
         }
+    }
+}
+
+/// Show every node the directory knows as a provider for a block, with the
+/// transport(s) each one speaks.
+async fn providers_cmd(cli: &Ctx, hash: &str) {
+    if !federate_storage::is_valid_hash(hash) {
+        die("not a valid content address (expected 64 lowercase hex chars)");
+    }
+    let dir = federate_directory::DirectoryClient::new(&cli.bootstrap);
+    match dir.providers(hash, None).await {
+        Ok(nodes) if nodes.is_empty() => {
+            println!("no providers announced for block {hash}");
+            println!("(origin/Node 1 can still serve it over HTTP compatibility)");
+        }
+        Ok(nodes) => {
+            for n in nodes {
+                let transport = match n.native_addr() {
+                    Some(addr) => format!("native {addr} + http"),
+                    None => "http only".to_string(),
+                };
+                println!(
+                    "{:<16} {:<9} transport: {:<28} roles: {:<22} ips: {} last_seen: {}",
+                    &n.registration.node_id[..16.min(n.registration.node_id.len())],
+                    n.status.as_str(),
+                    transport,
+                    n.registration
+                        .roles
+                        .iter()
+                        .map(|r| r.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    n.registration.public_ips.join(","),
+                    n.last_seen,
+                );
+            }
+        }
+        Err(e) => die(&format!(
+            "cannot query providers from {} ({e})",
+            cli.bootstrap
+        )),
     }
 }
 
