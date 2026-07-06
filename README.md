@@ -48,7 +48,7 @@ Add hosts-file mappings ([hosts-setup.md](docs/hosts-setup.md)), then open **htt
 
 ## TLDs
 
-`.fed` official · `.pagina` personal sites · `.rosa` creative spaces · `.cara` identity · `.mosca` weird internet · `.tipos`/`.types` typography
+`.fed` official · `.pagina` personal sites · `.rosa` creative spaces · `.cara` identity · `.mosca` weird internet · `.types` typography
 
 ## Roadmap
 

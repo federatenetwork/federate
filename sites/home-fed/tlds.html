@@ -1,46 +1,41 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>home.fed - Federate Network</title>
+<title>Namespaces - Federate Network</title>
 <link rel="stylesheet" href="/style.css">
 <script src="/fed-md.js" defer></script>
 </head>
 <body>
-<main>
-<header class="home-top">
+<main class="manifesto-page">
+
+<header class="manifesto-top">
+  <a href="/" class="back-home">← home.fed</a>
   <select id="lang-select" class="lang-select" aria-label="Idioma / Language">
     <option value="pt" lang="pt-BR">Português</option>
     <option value="en" lang="en-US">English</option>
   </select>
 </header>
 
-<div class="site-mark">
-  <img src="/logo.svg" alt="Federate Network" style="max-width:20rem;width:100%;height:auto">
-  <h1 class="visually-hidden">Federate Network</h1>
-</div>
-
-<article class="md md-home" id="home-body" aria-live="polite">
+<article class="md" id="tlds-body" lang="pt-BR" aria-live="polite">
   <noscript>
-    <p lang="en-US">This page is written in markdown and rendered in your browser.
-    JavaScript is off; read the source directly: <a href="/index.en.md">index.en.md</a>.</p>
     <p lang="pt-BR">Esta página é escrita em markdown e renderizada no navegador.
-    Sem JavaScript, leia direto na fonte: <a href="/index.pt.md">index.pt.md</a>.</p>
+    Sem JavaScript, leia direto na fonte: <a href="/tlds.pt.md">tlds.pt.md</a>.</p>
+    <p lang="en-US">This page is written in markdown and rendered in your browser.
+    Without JavaScript, read the source: <a href="/tlds.en.md">tlds.en.md</a>.</p>
   </noscript>
 </article>
 
 <footer>
-  <span class="only-pt" lang="pt-BR">Servido pela Federate Network: endereçado por conteúdo, verificado por hash, humano.
-  <a href="/tlds.html">Como esta página chegou até você →</a></span>
-  <span class="only-en" lang="en-US">Served through the Federate Network: content-addressed, hash-verified, human.
-  <a href="/tlds.html">How this page reached you →</a></span>
+  <span class="only-pt" lang="pt-BR">Servido pela Federate Network: endereçado por conteúdo, verificado por hash, humano.</span>
+  <span class="only-en" lang="en-US">Served through the Federate Network: content-addressed, hash-verified, human.</span>
 </footer>
 
 <script>
 (function () {
   function init() {
-    var body = document.getElementById('home-body');
+    var body = document.getElementById('tlds-body');
     var select = document.getElementById('lang-select');
 
     function apply(lang) {
@@ -48,7 +43,7 @@
       select.value = lang;
       body.setAttribute('lang', isPt ? 'pt-BR' : 'en-US');
       document.documentElement.lang = isPt ? 'pt-BR' : 'en-US';
-      window.fedMD.mount(body, isPt ? '/index.pt.md' : '/index.en.md');
+      window.fedMD.mount(body, isPt ? '/tlds.pt.md' : '/tlds.en.md');
       try { localStorage.setItem('federate-lang', lang); } catch (e) {}
     }
 

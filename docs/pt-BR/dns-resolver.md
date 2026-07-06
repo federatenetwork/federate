@@ -9,7 +9,7 @@ tocar no gateway.
 ## O que ele fará
 
 - Escutar em localhost (por exemplo, `127.0.0.1:53`) ou em um endereço de resolvedor configurado pelo sistema operacional.
-- Responder os TLDs Federate (`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.tipos`, `.types`):
+- Responder os TLDs Federate (`.fed`, `.pagina`, `.rosa`, `.cara`, `.mosca`, `.busca`, `.types`):
   - modo gateway: retornar `127.0.0.1` para que o gateway local `federated` sirva o site
   - modos futuros: retornar IPs de gateways remotos ou IPs de serviços locais
 - **Encaminhar todas as outras consultas** para o resolvedor upstream normal do usuário;

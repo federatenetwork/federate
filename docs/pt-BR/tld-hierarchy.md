@@ -36,7 +36,7 @@ governança?
 
 | Status | Significado |
 |---|---|
-| `official` | Operado pela própria Federate Network (`.fed .pagina .rosa .cara .mosca .tipos .types`) |
+| `official` | Operado pela própria Federate Network (`.fed .pagina .rosa .cara .mosca .busca .types`) |
 | `delegated` | Operado por um usuário/operador (ex.: `.femboy`) |
 | `reserved` | Não pode ser comprado - infraestrutura/governança/segurança/uso futuro (`root`, `admin`, `registry`, …) |
 | `blocked` | Não pode ser criado - colisão com DNS público, marca, phishing, política (`com`, `net`, `dev`, `app`, …) |

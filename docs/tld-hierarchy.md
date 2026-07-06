@@ -33,7 +33,7 @@ ICANN/IANA DNS? is it blocked for safety/legal/governance reasons?
 
 | Status | Meaning |
 |---|---|
-| `official` | Operated by Federate Network itself (`.fed .pagina .rosa .cara .mosca .tipos .types`) |
+| `official` | Operated by Federate Network itself (`.fed .pagina .rosa .cara .mosca .busca .types`) |
 | `delegated` | Operated by a user/operator (e.g. `.femboy`) |
 | `reserved` | Cannot be purchased - infrastructure/governance/safety/future use (`root`, `admin`, `registry`, …) |
 | `blocked` | Cannot be created - public DNS collision, brand, phishing, policy (`com`, `net`, `dev`, `app`, …) |

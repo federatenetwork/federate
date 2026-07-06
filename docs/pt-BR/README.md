@@ -60,7 +60,7 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](hosts-setup.md)) e en
 
 ## TLDs
 
-`.fed` oficial · `.pagina` sites pessoais · `.rosa` espaços criativos · `.cara` identidade · `.mosca` internet esquisita · `.tipos`/`.types` tipografia
+`.fed` oficial · `.pagina` sites pessoais · `.rosa` espaços criativos · `.cara` identidade · `.mosca` internet esquisita · `.types` tipografia
 
 ## Roadmap
 

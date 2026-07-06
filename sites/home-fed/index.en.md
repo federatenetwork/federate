@@ -6,14 +6,10 @@
 
 ## Namespaces
 
-- `.fed` - official Federate namespace: specs, registry, status, governance
-- `.pagina` - personal sites, blogs, portfolios, essays
-- `.rosa` - creative, visual, poetic, art-oriented spaces
-- `.cara` - identity, profiles, people pages, public cards
-- `.mosca` - weird internet: experiments, memes, small games, underground pages
-- `.tipos` / `.types` - typography, type design, lettering, fonts
+`.fed` · `.pagina` · `.rosa` · `.cara` · `.mosca` · `.busca` · `.types`
 
 Every name is signed, from the root key down to hash-verified content blocks.
+[Meet each namespace and how a name becomes a page →](/tlds.html)
 
 ## Search
 

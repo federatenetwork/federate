@@ -60,7 +60,7 @@ Add hosts-file mappings ([hosts-setup.md](hosts-setup.md)), then open **http://h
 
 ## TLDs
 
-`.fed` official · `.pagina` personal sites · `.rosa` creative spaces · `.cara` identity · `.mosca` weird internet · `.tipos`/`.types` typography
+`.fed` official · `.pagina` personal sites · `.rosa` creative spaces · `.cara` identity · `.mosca` weird internet · `.types` typography
 
 ## Roadmap
 

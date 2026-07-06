@@ -6,14 +6,10 @@
 
 ## Espaços de nomes
 
-- `.fed` - espaço oficial da Federate: especificações, registro, status, governança
-- `.pagina` - sites pessoais, blogs, portfólios, ensaios
-- `.rosa` - espaços criativos, visuais, poéticos, artísticos
-- `.cara` - identidade, perfis, páginas de pessoas, cartões públicos
-- `.mosca` - internet esquisita: experimentos, memes, joguinhos, páginas underground
-- `.tipos` / `.types` - tipografia, type design, lettering, fontes
+`.fed` · `.pagina` · `.rosa` · `.cara` · `.mosca` · `.busca` · `.types`
 
 Todo nome é assinado, da chave raiz até os blocos de conteúdo verificados por hash.
+[Conheça cada espaço e como um nome vira página →](/tlds.html)
 
 ## Busca
 

@@ -16,8 +16,7 @@ pub const FEDERATE_TLDS: &[(&str, &str)] = &[
     ("cara", "Identity, profiles, personal presence, people pages, creator pages, public cards."),
     ("mosca", "Weird internet, experiments, memes, small games, odd projects, underground pages, strange communities."),
     ("busca", "Federate search and discovery services (e.g. fed.busca). Official, root-managed."),
-    ("tipos", "Typography, type design, lettering, fonts, and written-form craft (Portuguese namespace)."),
-    ("types", "Typography, type design, lettering, fonts, and written-form craft (English namespace)."),
+    ("types", "Typography, type design, lettering, fonts, and written-form craft."),
 ];
 
 pub fn is_default_official_tld(tld: &str) -> bool {
