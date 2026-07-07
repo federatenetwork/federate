@@ -60,6 +60,10 @@ Add hosts-file mappings ([hosts-setup.md](hosts-setup.md)), then open **http://h
 - [port-80-setup.md](port-80-setup.md) - portless URLs
 - [https-local.md](https-local.md) - internal HTTPS / local CA plans
 - [tld-hierarchy.md](tld-hierarchy.md) - root registry, TLD operators, delegation
+- [root-registry.md](root-registry.md) - the persistent, runtime-mutable root registry
+- [mutations.md](mutations.md) - signed mutations, challenge-response, audit log
+- [publishing.md](publishing.md) - publishing sites through the ingest API
+- [security.md](security.md) - security model of the runtime registry
 - [signatures.md](signatures.md) - chain of trust, canonical signing
 - [blocked-tlds.md](blocked-tlds.md) - IANA/reserved/policy blocklists
 - [tld-marketplace-roadmap.md](tld-marketplace-roadmap.md) - future marketplace phases

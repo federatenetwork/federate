@@ -118,9 +118,12 @@ Enforced, not advisory:
   still cryptographically valid; an unparseable `expires_at` counts as
   expired (fail closed).
 
-Future mutation APIs (registering/updating TLDs and domains at runtime) MUST
-additionally use server-issued nonces or challenge-response so a captured
-signed request cannot be replayed.
+- **Mutation replay protection**: runtime registry mutations additionally
+  use server-issued single-use nonces (challenge-response), a 5 minute
+  timestamp window, self-certifying mutation ids persisted across restarts,
+  and per-target monotonic versions, so a captured signed request can never
+  be replayed or reordered into a rollback. See
+  [mutations.md](mutations.md) and [security.md](security.md).
 
 ## When verification fails
 

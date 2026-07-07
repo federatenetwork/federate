@@ -1,14 +1,17 @@
 # Federate Network: current-state report
 
-Date: 2026-07-06. HEAD: `0981c8a`. Workspace clean. Factual snapshot; no changes proposed here are implemented.
+Date: 2026-07-06 (updated 2026-07-07 with the persistent runtime-mutable registry). Base HEAD: `0981c8a` plus the uncommitted registry/mutation work described below. Factual snapshot.
 
 ## Executive summary
 
-The repo is a working single-operator overlay network with a genuinely native protocol path and a complete, tested signature chain. Root zone, TLD records, delegated TLD registries, domain records, manifests, and content blocks are all real, signed, verified fail-closed, and resolvable end to end over the native protocol with HTTP as fallback. Operator and owner tooling exists and works from independent machines. What does NOT exist: any runtime mutation (everything is re-signed at server startup from disk), payments, key rotation, abuse enforcement, native browser, non-HTML runtime, and any actual public deployment. The trust model is strong; the lifecycle/governance model is startup-time-only. 75 tests, all validation commands pass.
+The repo is a working single-operator overlay network with a genuinely native protocol path and a complete, tested signature chain. Root zone, TLD records, delegated TLD registries, domain records, manifests, and content blocks are all real, signed, verified fail-closed, and resolvable end to end over the native protocol with HTTP as fallback. Operator and owner tooling exists and works from independent machines. NEW: the root registry is now persistent and runtime-mutable; Node 1 seeds it on first boot only, and every later change arrives as a signed, nonce-protected, versioned, audited mutation (publish/update/suspend/reinstate domains, delegate TLDs, re-pin delegated registries) or a site package ingest, with no seed edits and no restarts. What does NOT exist: payments, key rotation, runtime abuse-report channel, native browser, non-HTML runtime, and any actual public deployment. 98 tests, all validation commands pass.
 
 ## What is real today
 
 - Full verified resolution chain, both doors (native `fed://` path and HTTP gateway), one engine (`federate-resolution`).
+- **Persistent, runtime-mutable root registry** (`federate-mutation` + federate-server): durable state under `data_dir/registry/` (signed zone, delegated registries, content stores, append-only signed audit log, mutation history, per-version snapshots), seed runs on first boot only, fail-closed re-verification on every load, atomic writes, no private keys in records.
+- **Signed mutation API**: envelope with server-issued single-use nonce (challenge-response), 5-minute timestamp window, self-certifying BLAKE3 mutation ids persisted across restarts, per-target monotonic versions, authorization against current signed state (root / TLD operator / domain owner), domain status transition matrix, root-signed audit event per accepted mutation, strict root_version increase (client rollback protection preserved). Endpoints: POST /v1/mutations/nonce, /v1/mutations, /v1/ingest/package; GET /v1/mutations/:id, /v1/mutations/target/:kind/:id, /v1/registry/{status,audit,verify}; POST /v1/registry/snapshot.
+- **Site package ingest + publishing CLI**: `federate publish package ./dist --domain x.pagina` (one step), `federate registry submit-package`, `federate domain update/suspend/reinstate`, `federate tld delegate`, `federate mutation nonce/inspect`, `federate registry status/audit/snapshot/verify`. Live-verified end to end: publish, native fetch, suspend (resolution blocked), reinstate, runtime TLD delegation, wrong-key 403, server restart with full state preserved.
 - Native protocol v1 (framed JSON over TCP, port 4077): handshake with version negotiation, root/manifest/block/registry/record/status messages, served by Node 1 and noded, consumed by the resolver and the CLI. Verified live repeatedly with HTTP dead.
 - Delegated TLDs: signed `TldRegistry`, 4 registry modes, fail-closed verification, per-TLD offline cache, version rollback protection. The `.femboy` seed and `eu.femboy` resolve through the delegated path.
 - Operator/owner tooling: `federate site package` (blocks + owner-signed manifest, `--install` into node stores), `federate operator sign-record / build-registry / verify-registry`, noded `registry_files` serving. Verified live: one noded served registry + manifest + blocks natively with zero Node 1 involvement.
@@ -18,8 +21,8 @@ The repo is a working single-operator overlay network with a genuinely native pr
 
 ## What is partially implemented
 
-- **Publishing**: the owner/operator side is real; but Node 1 still generates ALL official-TLD content from its local `sites/` dir with dev keys at startup. No ingest API. A stranger cannot publish under an official TLD without filesystem access to Node 1.
-- **Registry/domain lifecycle**: statuses (suspended/revoked/expired...) fully enforced at resolution, but nothing can change a status at runtime; it requires editing seed data and restarting `federate-server`. Marketplace endpoints (`/v1/applications`, `tld apply/approve/block/reserve`) are stubs printing explanations.
+- **Publishing**: real at runtime now (package ingest + signed mutations; `sites/` is first-boot seed only). Still partial administratively: official-TLD registration is first-come with no payment/identity binding, no rate limiting on the ingest endpoints, and no web UI.
+- **Registry/domain lifecycle**: statuses fully enforced at resolution AND changeable at runtime via signed mutations (suspend/reinstate/revoke, TLD status changes, delegation). Still missing: application/approval workflow and payments; `tld apply` and `/v1/applications` remain stubs (`tld approve` now points at `tld delegate`).
 - **CDN/storage**: LRU cache, fetch-on-miss, signed announcements, provider ranking (region + latency) all real; but no replication targets, no pinning, and directory-based provider discovery for manifests/registries uses only configured defaults, not per-hash announcements.
 - **Search**: real crawler through the verifying resolver, opt-out honored, TF ranking, no ads/tracking/AI-training. But the index is in-memory only, rebuilds every 10 minutes from scratch, ranking is naive, no UI site is wired to `fed.busca` in the repo, and only root-zone (official TLD) domains are crawled.
 - **Deployment**: complete docs (Hetzner-style VPS, hardened systemd units, Caddy host-routing, ufw, port-53 freeing, key backup, rollback), Dockerfile, launchd plist. Never executed against a real server; and the deploy docs predate the native listener: **no `4077/tcp` in the ufw list and no `--native-listen` in the systemd unit**.
@@ -37,7 +40,7 @@ The repo is a working single-operator overlay network with a genuinely native pr
 - HTTPS for internal domains / local CA: `https-local.md` plan only. The gateway serves plain HTTP.
 - QUIC transport: doc note only.
 
-## Crates and binaries (26)
+## Crates and binaries (27)
 
 **Libraries** (all production-quality, all used):
 
@@ -52,6 +55,7 @@ The repo is a working single-operator overlay network with a genuinely native pr
 | federate-root | RootZone, TldRecord, blocklists, disk cache | real |
 | federate-registry | TldRegistry (delegated), RegistryView, HTTP registry client, file loader | real |
 | federate-manifest | signed site manifests, path-to-hash mapping | real |
+| federate-mutation | signed mutation envelopes, nonce store, signed audit events, persistent RegistryStore (state + logs + snapshots + apply path) | real; 23 tests incl. native-protocol e2e |
 | federate-storage | BLAKE3, traversal-proof BlockStore | real |
 | federate-client | HTTP compatibility client (capped reads) | real; explicitly the fallback layer |
 | federate-resolution | THE engine: chain verification, native-first fetch, caches, rollback | real; heart of the system, 17 tests |
@@ -67,9 +71,9 @@ The repo is a working single-operator overlay network with a genuinely native pr
 
 | Binary | Purpose | Status |
 |---|---|---|
-| federate-server | Node 1: builds+signs everything from disk at startup, serves native+HTTP, hosts the directory | real for dev/single-operator; startup-time-only mutation; in-memory stores |
+| federate-server | Node 1: persistent runtime-mutable registry (seed on first boot only), signed mutation + package ingest endpoints, serves native+HTTP, hosts the directory | real; single root authority |
 | federated | local daemon: gateway :80, API :7777, native discovery | real |
-| federate (CLI) | 20+ command groups incl. fetch --trace, node ping, delegated-registry, operator, site | real; some subcommands are informational stubs (tld apply/approve) |
+| federate (CLI) | 20+ command groups incl. fetch --trace, node ping, delegated-registry, operator, site, publish, registry, mutation, domain update/suspend/reinstate, tld delegate | real; `tld apply` still informational |
 | federate-noded | multi-role node (gateway/dns/storage/cdn/search/root-mirror/bootstrap), native listener, registry_files | real |
 | federate-dnsd | standalone DNS node | real |
 | federate-gatewayd | standalone gateway node | real |
@@ -114,12 +118,12 @@ Implemented and served: `Hello/Welcome` (version negotiation, capabilities), `Ge
 - 23 official TLDs seeded root-managed; 1 delegated seed (`.femboy`, delegated_manifest, own operator key, expiry 2027).
 - Blocked: full IANA list (`blocked_tlds.txt`); reserved: 8 names; policy/brand-safety lists exist but are empty.
 - Operators CAN operate their own TLD today: sign records, build/verify the registry, serve it from their own noded (`delegated_native`), all off-root. Live-verified.
-- Limit: getting a delegation created still means editing federate-server seed code (`SEED_DELEGATED_TLDS`) and restarting. No application/approval flow.
-- Domain issuing: real cryptographically (operator tooling), dev-only administratively (official-TLD domains come from Node 1's `sites/` scan with a single dev owner key).
+- Delegations are created at runtime now: `federate tld delegate` (root-key-signed mutation). `delegated_manifest` operators re-pin their registry hash with an `update_registry_pointer` mutation (operator-signed, version-monotonic). `SEED_DELEGATED_TLDS` only matters on first boot. Still no application/approval/payment flow around it.
+- Domain issuing: real cryptographically AND administratively at runtime (owner-signed publish/update mutations, operator-signed issue mutations, package ingest); official-TLD registration is first-come and free in this phase. The `sites/` scan with the dev owner key is first-boot seed only.
 
 ## Trust and signatures: verified checklist
 
-All genuinely implemented and covered by tests: root zone signature (+ trust-anchor mismatch rejection), TLD record signature, domain record signature (operator key, TLD-consistency), delegated registry signature (+ cross-TLD smuggling rejection), manifest signature (owner key + domain match + content address), block hash verification (fetch and cache read, eviction on tamper), root zone rollback, delegated registry rollback, key pinning (flag/TOFU persisted; cached registries re-verified against the CURRENT operator key), expiration fail-closed everywhere, status gating everywhere. Missing: revocation of keys (only records/statuses), rotation, nonce-protected mutation APIs (none exist yet; docs mark them as a MUST before mutation lands).
+All genuinely implemented and covered by tests: root zone signature (+ trust-anchor mismatch rejection), TLD record signature, domain record signature (operator key, TLD-consistency), delegated registry signature (+ cross-TLD smuggling rejection), manifest signature (owner key + domain match + content address), block hash verification (fetch and cache read, eviction on tamper), root zone rollback, delegated registry rollback, key pinning (flag/TOFU persisted; cached registries re-verified against the CURRENT operator key), expiration fail-closed everywhere, status gating everywhere, and NOW nonce-protected signed mutation APIs (challenge-response, timestamp window, persistent replay history, per-target version rollback rejection, authorization matrix, signed audit chain with before/after state hashes, tampered-state-fails-boot). Missing: revocation of keys (only records/statuses) and key rotation.
 
 ## DNS state
 
@@ -139,18 +143,18 @@ Exists (`federate-search` + searchd + noded role). Indexes every HTML file of ev
 
 ## Deployment
 
-Docs and units complete on paper: hardened systemd (NoNewPrivileges, ProtectSystem=strict, UMask=0077), Caddy Host-routing with the catch-all that makes `http://home.fed` work, ufw list, port-53 freeing, key storage guidance (0600, offline root-key backup), rollback procedure, external validation checklist. Not deployed anywhere. Concrete staleness found: firewall/docs/units omit native port **4077/tcp**; the federate-server unit does not pass `--native-listen`; bootstrap `native_nodes` will be empty until nodes with native ports register.
+Docs and units complete on paper: hardened systemd (NoNewPrivileges, ProtectSystem=strict, UMask=0077), Caddy Host-routing with the catch-all that makes `http://home.fed` work, ufw list, port-53 freeing, key storage guidance (0600, offline root-key backup), rollback procedure, external validation checklist. Not deployed anywhere. The previously flagged staleness is fixed: ufw list now includes **4077/tcp**, the federate-server unit passes `--native-listen 0.0.0.0:4077`, and the docs cover backing up `data/registry/` as the authoritative state; bootstrap `native_nodes` still fills only as native-port nodes register.
 
 ## Tests and validation
 
-75 test functions across 20 crates (resolution 17, registry 10, naming 6, directory 5, root 5, uri 5, dns 5, protocol 4, gateway 3, search 3, others 1-2). Strong coverage: the whole trust chain including adversarial cases (forged zones/registries/records/blocks, replay/rollback, expiry, traversal, SSRF, XSS-escaping, TCP-DNS framing abuse). Zero tests: all 7 binaries (main.rs logic like federate-server's build_store, noded role assembly, CLI handlers), federate-client, block announce/serve loops, gateway ETag-vs-live-server integration. No integration/e2e harness spawning real binaries (done manually, repeatedly, in dev).
+98 test functions across 21 crates (mutation 23, resolution 17, registry 10, naming 6, directory 5, root 5, uri 5, dns 5, protocol 4, gateway 3, search 3, others 1-2). Strong coverage: the whole trust chain including adversarial cases (forged zones/registries/records/blocks, replay/rollback, expiry, traversal, SSRF, XSS-escaping, TCP-DNS framing abuse), plus the full mutation surface: first-boot seed, restart persistence, tampered-state-fails-boot, unsigned/wrong-signer/replayed/stale/rollback rejection, owner/operator/root authorization (incl. cross-TLD denial), status transition matrix, delegated pointer rollback, and a runtime-published package resolving over the NATIVE protocol through the real verifying resolver. Zero tests: the 7 binaries' main.rs wiring (server seed/route assembly, noded roles, CLI handlers), federate-client, block announce/serve loops, gateway ETag-vs-live-server integration. No harness spawning real binaries in CI (the full publish/suspend/restart flow was verified live against a real server + CLI during development).
 
-Validation run 2026-07-06, all green:
+Validation run 2026-07-07, all green:
 
 ```
 cargo fmt --all --check      ok (no diff)
 cargo clippy --workspace --all-targets -- -D warnings   ok
-cargo test --workspace       75 passed, 0 failed
+cargo test --workspace       98 passed, 0 failed
 cargo build --release        ok
 ```
 
@@ -158,8 +162,8 @@ cargo build --release        ok
 
 | Area | Real | Partial | Stub | Docs only | Notes |
 |---|---|---|---|---|---|
-| root/TLD registry | x | | | | signed, verified, rollback-protected; mutation = restart |
-| delegated TLDs | x | | | | 4 modes, fail-closed, cached, rollback; delegation creation is seed-code |
+| root/TLD registry | x | | | | signed, verified, rollback-protected, PERSISTENT, runtime-mutable via signed mutations |
+| delegated TLDs | x | | | | 4 modes, fail-closed, cached, rollback; delegation + pointer updates now runtime mutations |
 | native protocol | x | | | | v1; GetProviders inert; directory plane not native |
 | native transport | x | | | | framed TCP with limits; QUIC docs-only |
 | DNS | x | | | | UDP+TCP, multi-gateway, forwarding; EDNS missing, not deployed |
@@ -167,33 +171,35 @@ cargo build --release        ok
 | node directory | x | | | | HTTP-only plane; /v1/peers stub |
 | storage/CDN | | x | | | cache+announce+rank real; replication/pinning absent |
 | search | | x | | | works, in-memory, official TLDs only, no frontend |
-| publishing/deploy | | x | | | operator/owner tooling real; official-TLD publish = Node 1 filesystem; zero live deploys |
+| publishing/deploy | | x | | | runtime publish/ingest real (CLI + API, live-verified); still first-come/free, no UI, zero live deploys |
 | TLD operator tooling | x | | | | sign/build/verify/serve, live-verified |
-| abuse/enforcement | | | x | | creation-time blocklists only; no runtime mechanism |
+| abuse/enforcement | | x | | | blocklists at creation + runtime suspend/revoke/reinstate mutations; no report channel |
 | payments/transactions | | | x | | placeholder JSON fields |
 | native browser | | | | x | |
 | non-HTML runtime | | | | x | |
-| public deployment | | | | x | docs complete but stale (port 4077); never executed |
+| public deployment | | | | x | docs/units refreshed (4077, native-listen, registry backups); never executed |
 
-## Biggest gaps (top 10)
+## Biggest gaps (top 8)
 
-1. **Runtime mutation of the root registry**: everything requires restarting Node 1. Blocks delegation issuance, status changes, official-domain publishing. State: startup-only build_store. Next: persistent signed registry state + admin-signed mutation API with nonce/challenge (docs already mandate this). **Large.**
-2. **Official-TLD publishing path**: the `sites/` scan + dev owner key means only Node 1's filesystem publishes. State: owner tooling exists but Node 1 cannot ingest a package. Next: an ingest endpoint (or native message) accepting a site package + operator-signed record, verified before acceptance. **Medium.**
-3. **Key rotation/revocation**: a single static root key and operator keys forever; a leaked key is game over. State: docs-only. Next: cross-signed transition records for root and operators, honored by resolvers. **Large.**
-4. **No public deployment**: nothing validated outside localhost; deploy docs stale (port 4077). State: docs+units ready-ish. Next: one real Hetzner deploy following the doc, fixing it (add 4077, native-listen) as found. **Small-medium.**
-5. **Replication/pinning**: content survives only where cached; if the origin dies, uncached content dies. State: fetch-on-miss CDN only. Next: pinning sets + replication targets per manifest, using existing announcements. **Medium.**
-6. **Directory/discovery still HTTP + single point**: one directory on Node 1; native plane absent; `GetProviders` unused. Next: serve provider queries natively and allow multiple directories. **Medium.**
-7. **Binary-level integration tests**: 7 binaries untested; regressions in main.rs wiring are only caught manually. Next: a spawn-binaries e2e test (server + noded + CLI fetch) in CI. **Medium.**
-8. **Delegated content in search + search persistence**: delegated domains are invisible in `.busca`; the index is lost on restart. Next: crawl via registry enumeration; persist the index. **Small.**
-9. **TLS story for Federate names**: a plain-HTTP browser door; modern browsers are increasingly hostile to it. State: local-CA plan docs-only. Next: decide local-CA vs native-client-first, prototype accordingly. **Large.**
-10. **Non-HTML/native content model**: the manifest is a file tree with extension-guessed MIME; the runtime is browser HTML. State: roadmap doc. Next: typed content metadata in the manifest (optional field, signature-compatible) as the boundary for a future runtime. **Medium.**
+Former gaps 1 (runtime mutation) and 2 (official-TLD publishing path) are DONE: persistent registry, signed mutation API with nonce/challenge, package ingest, publishing CLI, all tested and live-verified. Remaining:
+
+1. **Key rotation/revocation**: a single static root key and operator keys forever; a leaked key is game over. State: docs-only. Next: cross-signed transition records for root and operators, honored by resolvers. **Large.**
+2. **No public deployment**: nothing validated outside localhost. Deploy docs/units were refreshed (4077/tcp in ufw, `--native-listen` in the unit, registry backup guidance) but never executed. Next: one real VPS deploy following the doc. **Small-medium.**
+3. **Replication/pinning**: content survives only where cached; if the origin dies, uncached content dies. State: fetch-on-miss CDN only. Next: pinning sets + replication targets per manifest, using existing announcements. **Medium.**
+4. **Directory/discovery still HTTP + single point**: one directory on Node 1; native plane absent; `GetProviders` unused. Next: serve provider queries natively and allow multiple directories. **Medium.**
+5. **Binary-level integration tests**: 7 binaries untested; regressions in main.rs wiring are only caught manually. Next: a spawn-binaries e2e test (server + noded + CLI publish + fetch) in CI. **Medium.**
+6. **Delegated content in search + search persistence**: delegated domains are invisible in `.busca`; the index is lost on restart. Next: crawl via registry enumeration; persist the index. **Small.**
+7. **TLS story for Federate names**: a plain-HTTP browser door; modern browsers are increasingly hostile to it. State: local-CA plan docs-only. Next: decide local-CA vs native-client-first, prototype accordingly. **Large.**
+8. **Non-HTML/native content model**: the manifest is a file tree with extension-guessed MIME; the runtime is browser HTML. State: roadmap doc. Next: typed content metadata in the manifest (optional field, signature-compatible) as the boundary for a future runtime. **Medium.**
+
+New, created by this phase (smaller): rate limiting on the nonce/mutation/ingest endpoints before public exposure; snapshot/audit-log retention policy; a marketplace/application flow on top of the now-working mutations.
 
 ## Recommended next steps
 
-**Single best next step: gaps 1+2 together, a persistent, runtime-mutable root registry with a signed ingest/mutation API.** Everything else queues behind it: delegation issuance, real publishing, marketplace, and a Node 1 that does not rebuild the universe from `sites/` on every restart. It also forces the nonce/replay design the docs already require. Concretely: persist zone + registries to disk as the source of truth, add operator/owner-signed mutation requests (publish site package, update record, delegate TLD) with challenge-response, keep startup seeding only as first-boot bootstrap.
+The previous "single best next step" (persistent, runtime-mutable root registry with a signed ingest/mutation API) is DONE: seed is first-boot only, `data_dir/registry/` is the source of truth, publishing/delegation/enforcement are signed nonce-protected audited mutations, and everything old (seed sites, delegated resolution, native fetch, HTTP gateway) still works. See docs/en-US/root-registry.md, mutations.md, publishing.md, security.md (with pt-BR twins).
 
-Next three after that:
+Next three:
 
-1. First real VPS deployment (gap 4), fixing the stale deploy docs (port 4077, `--native-listen`) as executed.
-2. Binary-level e2e test harness in CI (gap 7) so the deploy target stays honest.
-3. Key rotation records for root + operators (gap 3) before any key matters in production.
+1. First real VPS deployment (gap 2), now that the deploy docs/units carry 4077 + `--native-listen` + registry backups.
+2. Binary-level e2e test harness in CI (gap 5) covering server boot, publish, restart persistence, and fetch.
+3. Key rotation records for root + operators (gap 1) before any key matters in production.

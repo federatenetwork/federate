@@ -65,6 +65,12 @@ pub enum FederateError {
     },
     #[error("invalid signature")]
     InvalidSignature,
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+    #[error("replay rejected: {0}")]
+    Replay(String),
+    #[error("mutation rejected: {0}")]
+    MutationRejected(String),
     #[error("network error: {0}")]
     Network(String),
     #[error("io error: {0}")]

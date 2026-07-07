@@ -60,6 +60,10 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](hosts-setup.md)) e en
 - [port-80-setup.md](port-80-setup.md) - URLs sem porta
 - [https-local.md](https-local.md) - planos de HTTPS interno / CA local
 - [tld-hierarchy.md](tld-hierarchy.md) - registro raiz, operadores de TLD, delegação
+- [root-registry.md](root-registry.md) - o root registry persistente e mutável em runtime
+- [mutations.md](mutations.md) - mutações assinadas, desafio-resposta, log de auditoria
+- [publishing.md](publishing.md) - publicando sites pela API de ingestão
+- [security.md](security.md) - modelo de segurança do registry em runtime
 - [signatures.md](signatures.md) - cadeia de confiança, assinatura canônica
 - [blocked-tlds.md](blocked-tlds.md) - listas de bloqueio IANA/reservados/política
 - [tld-marketplace-roadmap.md](tld-marketplace-roadmap.md) - fases futuras do marketplace

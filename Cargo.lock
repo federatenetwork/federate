@@ -500,6 +500,7 @@ dependencies = [
  "federate-dns",
  "federate-identity",
  "federate-manifest",
+ "federate-mutation",
  "federate-naming",
  "federate-node",
  "federate-protocol",
@@ -509,6 +510,7 @@ dependencies = [
  "federate-storage",
  "federate-transport",
  "federate-uri",
+ "hex",
  "rand 0.8.6",
  "reqwest",
  "serde_json",
@@ -637,6 +639,31 @@ dependencies = [
  "federate-identity",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "federate-mutation"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "federate-client",
+ "federate-core",
+ "federate-identity",
+ "federate-manifest",
+ "federate-naming",
+ "federate-protocol",
+ "federate-registry",
+ "federate-resolution",
+ "federate-root",
+ "federate-storage",
+ "federate-transport",
+ "federate-uri",
+ "hex",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -794,6 +821,7 @@ dependencies = [
  "federate-directory",
  "federate-identity",
  "federate-manifest",
+ "federate-mutation",
  "federate-naming",
  "federate-protocol",
  "federate-registry",

@@ -154,6 +154,7 @@ ufw allow 53/udp        # DNS Federate
 ufw allow 53/tcp        # DNS Federate (fallback TCP)
 ufw allow 8081/tcp      # health endpoint do gateway (health checks do diretório)
 ufw allow 8053/tcp      # health endpoint do nó DNS
+ufw allow 4077/tcp      # protocolo Federate nativo (listener do Node 1)
 ufw enable
 ```
 
@@ -323,17 +324,24 @@ gravadas com `0600` e nunca servidas por nenhuma API.
 - Verifique as permissões após o primeiro start:
   `find /var/lib/federate/data -name identity.key -exec ls -l {} +`
   (toda chave `-rw-------`, dona `federate`).
-- Backup sugerido (chaves + snapshot do diretório, NÃO os caches de blocos):
+- Backup sugerido (chaves + registry persistente + snapshot do diretório,
+  NÃO os caches de blocos):
   `tar czf federate-backup.tgz -C /var/lib/federate data`, guardado fora da
-  máquina.
+  máquina. `data/registry/` É o estado autoritativo da rede (zona assinada,
+  log de auditoria, histórico de mutações, snapshots); trate o backup como
+  o de um banco de dados.
 
 ## Comportamento de restart
 
-`Restart=on-failure` + `RestartSec=3` em toda unit. O servidor re-assina a
-zona raiz no startup com `root_version` derivado do relógio, então os
-daemons (que rejeitam zonas mais antigas que uma já verificada) sempre a
-aceitam. Nós registrados persistem em `data/directory-nodes.json` e são
-re-verificados no load; nós também se re-registram a cada ~60s.
+`Restart=on-failure` + `RestartSec=3` em toda unit. No PRIMEIRO boot o
+servidor faz o seed do registry persistente a partir de `sites/` e das
+constantes de seed; em todo boot seguinte ele carrega `data/registry/` como
+fonte da verdade, re-verificado contra a chave raiz (veja
+[root-registry.md](root-registry.md)). Versões da zona raiz crescem
+estritamente entre mutações e reinícios, então os daemons (que rejeitam
+zonas mais antigas que uma já verificada) sempre aceitam a zona atual. Nós
+registrados persistem em `data/directory-nodes.json` e são re-verificados
+no load; nós também se re-registram a cada ~60s.
 
 ## Logs
 

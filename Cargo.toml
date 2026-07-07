@@ -11,6 +11,7 @@ members = [
     "crates/federate-registry",
     "crates/federate-resolution",
     "crates/federate-manifest",
+    "crates/federate-mutation",
     "crates/federate-storage",
     "crates/federate-node",
     "crates/federate-directory",
@@ -66,6 +67,7 @@ federate-naming = { path = "crates/federate-naming" }
 federate-registry = { path = "crates/federate-registry" }
 federate-resolution = { path = "crates/federate-resolution" }
 federate-manifest = { path = "crates/federate-manifest" }
+federate-mutation = { path = "crates/federate-mutation" }
 federate-storage = { path = "crates/federate-storage" }
 federate-node = { path = "crates/federate-node" }
 federate-directory = { path = "crates/federate-directory" }

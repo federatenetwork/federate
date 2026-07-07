@@ -154,6 +154,7 @@ ufw allow 53/udp        # Federate DNS
 ufw allow 53/tcp        # Federate DNS (TCP fallback)
 ufw allow 8081/tcp      # gateway health endpoint (directory health checks)
 ufw allow 8053/tcp      # dns node health endpoint
+ufw allow 4077/tcp      # native Federate protocol (Node 1 listener)
 ufw enable
 ```
 
@@ -320,16 +321,23 @@ written `0600` and never served by any API.
 - Verify permissions after first start:
   `find /var/lib/federate/data -name identity.key -exec ls -l {} +`
   (every key `-rw-------`, owned by `federate`).
-- Suggested backup (keys + directory snapshot, NOT block caches):
+- Suggested backup (keys + persistent registry + directory snapshot, NOT
+  block caches):
   `tar czf federate-backup.tgz -C /var/lib/federate data`, stored off-box.
+  `data/registry/` IS the authoritative network state (signed zone, audit
+  log, mutation history, snapshots); back it up like a database.
 
 ## Restart behavior
 
-`Restart=on-failure` + `RestartSec=3` in every unit. The server re-signs the
-root zone at startup with a clock-derived `root_version`, so daemons (which
-reject zones older than one they already verified) always accept it.
-Registered nodes persist in `data/directory-nodes.json` and re-verify on
-load; nodes also re-register every ~60s.
+`Restart=on-failure` + `RestartSec=3` in every unit. On the FIRST boot the
+server seeds the persistent registry from `sites/` and the seed constants;
+on every later boot it loads `data/registry/` as the source of truth,
+re-verified against the root key (see
+[root-registry.md](root-registry.md)). Root zone versions increase strictly
+across mutations and restarts, so daemons (which reject zones older than
+one they already verified) always accept the current zone. Registered nodes
+persist in `data/directory-nodes.json` and re-verify on load; nodes also
+re-register every ~60s.
 
 ## Logs
 

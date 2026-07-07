@@ -15,6 +15,7 @@ federate-root = { workspace = true }
 federate-manifest = { workspace = true }
 federate-storage = { workspace = true }
 federate-identity = { workspace = true }
+federate-mutation = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

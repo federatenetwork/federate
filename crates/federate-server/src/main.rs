@@ -1,26 +1,28 @@
 //! federate-server: Node 1, the public bootstrap/control-plane server and
 //! home of the Federate Root Registry.
 //!
-//! At startup it:
-//!   - loads blocklists (blocked_tlds.txt + data/blocked/*)
-//!   - loads/creates the Federate Root Key, official operator key, and dev
-//!     domain-owner key (private keys stay on disk, never exposed via API)
-//!   - validates and signs official TLD records with the root key
-//!   - scans sites/, content-addresses files (BLAKE3), signs manifests with
-//!     the owner key and domain records with the operator key
-//!   - signs the assembled root zone with the root key
+//! The registry is PERSISTENT and RUNTIME-MUTABLE:
+//!   - on FIRST boot only, seed data (official TLDs, sites/, seed delegated
+//!     TLDs) initializes the persistent registry under data_dir/registry/;
+//!   - on every later boot the persistent registry is the source of truth,
+//!     re-verified against the root key (fail closed);
+//!   - at runtime, state changes ONLY through signed mutation requests
+//!     (nonce challenge-response, timestamp window, per-target monotonic
+//!     versions, signed audit log, root zone snapshots) and the site
+//!     package ingest endpoint.
 //!
 //! Node 1 distributes signed data; daemons verify signatures, they do not
 //! trust this server.
 
-use axum::extract::{Path as AxPath, Query, State};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use federate_identity::NodeIdentity;
 use federate_manifest::Manifest;
+use federate_mutation::{MutationContext, MutationRequest, NonceStore, RegistryStore, SitePackage};
 use federate_naming::{
     validate_tld_name, DomainRecord, DomainStatus, RegistryType, TargetType, TldMode, TldStatus,
 };
@@ -29,6 +31,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Parser)]
 #[command(name = "federate-server", about = "Federate Network Node 1 server")]
@@ -36,11 +39,13 @@ struct Args {
     /// Listen address (dev: 127.0.0.1:9000; production sits behind Caddy/Nginx)
     #[arg(long, default_value = federate_core::DEFAULT_SERVER_ADDR)]
     listen: SocketAddr,
-    /// Directory of site directories (home-fed/, joao-pagina/, ...)
+    /// Directory of site directories (home-fed/, joao-pagina/, ...) used to
+    /// SEED the registry on first boot only. After the persistent registry
+    /// exists, this directory is never scanned again.
     #[arg(long, default_value = "sites")]
     sites_dir: PathBuf,
-    /// Data dir for keys (root key, operator key, owner key). Private keys
-    /// live here and are never served.
+    /// Data dir for keys and the persistent registry. Private keys live
+    /// here and are never served; registry state lives in data_dir/registry.
     #[arg(long, default_value = ".federate-server")]
     data_dir: PathBuf,
     /// Authoritative IANA/public TLD blocklist file.
@@ -59,15 +64,15 @@ struct Args {
 }
 
 struct Store {
-    root: RootZone,
+    /// The persistent, runtime-mutable Federate Root Registry.
+    registry: RwLock<RegistryStore>,
+    /// Single-use mutation challenges (anti-replay).
+    nonces: NonceStore,
     blocklists: Blocklists,
-    /// manifest hash -> canonical manifest JSON bytes
-    manifests: HashMap<String, Vec<u8>>,
-    /// block hash -> bytes
-    blocks: HashMap<String, Vec<u8>>,
-    /// tld -> (signed registry JSON bytes, parsed registry) for the seed
-    /// delegated TLDs this node distributes.
-    registries: HashMap<String, (Vec<u8>, federate_registry::TldRegistry)>,
+    /// Federate Root Key: signs the zone, TLD records, and audit events.
+    root_key: NodeIdentity,
+    /// Operator key of the root-managed official TLDs.
+    operator_key: NodeIdentity,
     node_id: String,
     started_at: String,
     /// TCP port of this node's native Federate protocol listener,
@@ -75,6 +80,17 @@ struct Store {
     native_port: u16,
     /// The official node directory (registered nodes, roles, health).
     directory: Arc<federate_directory::Directory>,
+}
+
+impl Store {
+    fn mutation_ctx<'a>(&'a self, now: chrono::DateTime<chrono::Utc>) -> MutationContext<'a> {
+        MutationContext {
+            root: &self.root_key,
+            official_operator: &self.operator_key,
+            blocklists: &self.blocklists,
+            now,
+        }
+    }
 }
 
 /// Native-protocol face of Node 1: the same signed root zone, manifests, and
@@ -103,38 +119,36 @@ impl federate_transport::NodeService for NativeService {
             code: ErrorCode::NotFound,
             detail: detail.to_string(),
         };
+        let registry = self.0.registry.read().await;
         match request {
-            Message::GetRoot => match serde_json::to_vec(&self.0.root) {
+            Message::GetRoot => match serde_json::to_vec(registry.zone()) {
                 Ok(zone_json) => Message::Root { zone_json },
                 Err(e) => Message::Error {
                     code: ErrorCode::Unavailable,
                     detail: e.to_string(),
                 },
             },
-            Message::GetManifest { hash } => match self.0.manifests.get(&hash) {
+            Message::GetManifest { hash } => match registry.manifest(&hash) {
                 Some(bytes) => Message::Manifest {
                     hash,
                     bytes: bytes.clone(),
                 },
                 None => not_found("no such manifest"),
             },
-            Message::GetBlock { hash } => match self.0.blocks.get(&hash) {
-                Some(bytes) => Message::Block {
-                    hash,
-                    bytes: bytes.clone(),
-                },
+            Message::GetBlock { hash } => match registry.block(&hash) {
+                Some(bytes) => Message::Block { hash, bytes },
                 None => not_found("no such block"),
             },
             // v1: delegated TLD registries. This node distributes signed
             // registries; receivers verify the operator signature.
-            Message::GetTldRegistry { tld } => match self.0.registries.get(&tld) {
+            Message::GetTldRegistry { tld } => match registry.registry(&tld) {
                 Some((bytes, _)) => Message::TldRegistry {
                     tld,
                     registry_json: bytes.clone(),
                 },
                 None => not_found("no delegated registry for this TLD here"),
             },
-            Message::GetDomainRecord { fqdn } => match self.0.lookup_domain(&fqdn) {
+            Message::GetDomainRecord { fqdn } => match registry.lookup_domain(&fqdn) {
                 Some(record) => match serde_json::to_vec(record) {
                     Ok(record_json) => Message::DomainRecord { fqdn, record_json },
                     Err(e) => Message::Error {
@@ -149,25 +163,13 @@ impl federate_transport::NodeService for NativeService {
                 roles: vec!["root-authority".into(), "origin".into()],
                 region: String::new(),
                 agent: concat!("federate-server/", env!("CARGO_PKG_VERSION")).into(),
-                root_version: Some(self.0.root.root_version),
+                root_version: Some(registry.zone().root_version),
             },
             _ => Message::Error {
                 code: ErrorCode::Unsupported,
                 detail: "this node answers GetRoot, GetManifest, GetBlock, and GetStatus".into(),
             },
         }
-    }
-}
-
-impl Store {
-    /// A domain record from the root zone or any seed delegated registry.
-    fn lookup_domain(&self, fqdn: &str) -> Option<&DomainRecord> {
-        if let Some(rec) = self.root.lookup(fqdn) {
-            return Some(rec);
-        }
-        self.registries
-            .values()
-            .find_map(|(_, registry)| registry.lookup(fqdn))
     }
 }
 
@@ -178,24 +180,17 @@ fn dir_to_domain(dir: &str) -> Option<(String, String)> {
     Some((label.to_string(), tld.to_string()))
 }
 
-fn build_store(args: &Args) -> anyhow::Result<Store> {
+/// First-boot seed: build the initial signed state exactly as the old
+/// startup path did (official TLDs, sites/ scan, seed delegated TLDs) and
+/// adopt it as the persistent registry. Runs ONLY when no registry exists.
+fn seed_registry(
+    args: &Args,
+    root_key: &NodeIdentity,
+    operator_key: &NodeIdentity,
+    owner_key: &NodeIdentity,
+    blocklists: &Blocklists,
+) -> anyhow::Result<RegistryStore> {
     let now = chrono::Utc::now().to_rfc3339();
-
-    // --- Keys. Private halves stay in data_dir; only public hex leaves. ---
-    let root_key = NodeIdentity::load_or_create(&args.data_dir.join("root"))?;
-    let operator_key = NodeIdentity::load_or_create(&args.data_dir.join("official-operator"))?;
-    let owner_key = NodeIdentity::load_or_create(&args.data_dir.join("dev-owner"))?;
-    let node_identity = NodeIdentity::load_or_create(&args.data_dir)?;
-
-    // --- Blocklists ---
-    let blocklists = Blocklists::load(&args.blocked_tlds, &args.blocked_dir)?;
-    tracing::info!(
-        "blocklists loaded: {} IANA, {} reserved, {} policy, {} brand-safety",
-        blocklists.iana.len(),
-        blocklists.reserved.len(),
-        blocklists.policy.len(),
-        blocklists.brand_safety.len()
-    );
 
     let mut audit = Vec::new();
     let mut audit_push = |action: &str, subject: &str, detail: Option<String>| {
@@ -242,11 +237,11 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         tlds.insert(name, rec);
     }
 
-    // Seed delegated TLDs (dev/demo data; marketplace/payments arrive
-    // later). Each delegated TLD has its OWN operator key: the root signs
-    // the delegation, the operator signs the registry and its domain
-    // records. Records are inserted after sites are scanned, because the
-    // TLD record pins the hash of the operator-signed registry manifest.
+    // Seed delegated TLDs (dev/demo data; runtime delegation goes through
+    // `federate tld delegate`). Each delegated TLD has its OWN operator key:
+    // the root signs the delegation, the operator signs the registry and its
+    // domain records. Records are inserted after sites are scanned, because
+    // the TLD record pins the hash of the operator-signed registry manifest.
     // `.femboy` is a neutral technical test TLD.
     const SEED_DELEGATED_TLDS: &[&str] = &["femboy"];
     let mut delegated_ops: BTreeMap<String, NodeIdentity> = BTreeMap::new();
@@ -259,8 +254,8 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     // --- Sites: manifests (owner-signed) + domain records (operator-signed).
     // Official-TLD records go into the root zone; delegated-TLD records go
     // into their TLD's operator-signed registry. ---
-    let mut manifests = HashMap::new();
-    let mut blocks = HashMap::new();
+    let mut manifests = BTreeMap::new();
+    let mut blocks: Vec<(String, Vec<u8>)> = Vec::new();
     let mut domains = BTreeMap::new();
     let mut delegated_domains: BTreeMap<String, BTreeMap<String, DomainRecord>> = BTreeMap::new();
 
@@ -299,7 +294,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
                 .replace('\\', "/");
             let bytes = std::fs::read(file.path())?;
             let hash = federate_storage::hash_bytes(&bytes);
-            blocks.insert(hash.clone(), bytes);
+            blocks.push((hash.clone(), bytes));
             files.insert(rel, hash);
         }
         if !files.contains_key("index.html") {
@@ -350,13 +345,13 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
                     .entry(tld.clone())
                     .or_default()
                     .insert(domain.clone(), record);
-                tracing::info!("published {domain} (delegated registry .{tld})");
+                tracing::info!("seeded {domain} (delegated registry .{tld})");
             }
             None => {
                 record.signature = Some(operator_key.sign(&record.signable_bytes()?));
                 audit_push("domain.register", &domain, None);
                 domains.insert(domain.clone(), record);
-                tracing::info!("published {domain}");
+                tracing::info!("seeded {domain}");
             }
         }
     }
@@ -367,7 +362,8 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     // (delegated_manifest mode): the root-signed TLD record pins its hash,
     // clients fetch it like any manifest and verify the operator signature.
     let registry_version = chrono::Utc::now().timestamp().max(0) as u64;
-    let mut registries: HashMap<String, (Vec<u8>, federate_registry::TldRegistry)> = HashMap::new();
+    let mut registries: BTreeMap<String, (Vec<u8>, federate_registry::TldRegistry)> =
+        BTreeMap::new();
     for (tld, operator) in &delegated_ops {
         let registry = federate_registry::TldRegistry::signed(
             operator,
@@ -422,9 +418,10 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     }
 
     // --- Signed root zone ---
-    // Version must be monotonic across restarts (daemons reject a zone older
-    // than one they already verified; that is the rollback protection), so derive it
-    // from the wall clock instead of hardcoding.
+    // Version must be monotonic across restarts and mutations (daemons
+    // reject a zone older than one they already verified; that is the
+    // rollback protection). The seed derives it from the wall clock; every
+    // accepted mutation afterwards bumps it strictly.
     let root_version = chrono::Utc::now().timestamp().max(0) as u64;
     let mut root = RootZone {
         network: federate_core::NETWORK_NAME.into(),
@@ -440,18 +437,73 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     root.signature = Some(root_key.sign(&root.signable_bytes()?));
     root.verify(&root_key.node_id())?; // self-check before serving
 
+    Ok(RegistryStore::init(
+        &args.data_dir.join("registry"),
+        root,
+        registries,
+        manifests,
+        blocks,
+    )?)
+}
+
+fn build_store(args: &Args) -> anyhow::Result<Store> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // --- Keys. Private halves stay in data_dir; only public hex leaves.
+    // Keys are NEVER part of registry records. ---
+    let root_key = NodeIdentity::load_or_create(&args.data_dir.join("root"))?;
+    let operator_key = NodeIdentity::load_or_create(&args.data_dir.join("official-operator"))?;
+    let owner_key = NodeIdentity::load_or_create(&args.data_dir.join("dev-owner"))?;
+    let node_identity = NodeIdentity::load_or_create(&args.data_dir)?;
+
+    // --- Blocklists ---
+    let blocklists = Blocklists::load(&args.blocked_tlds, &args.blocked_dir)?;
+    tracing::info!(
+        "blocklists loaded: {} IANA, {} reserved, {} policy, {} brand-safety",
+        blocklists.iana.len(),
+        blocklists.reserved.len(),
+        blocklists.policy.len(),
+        blocklists.brand_safety.len()
+    );
+
+    // --- Persistent registry: seed on first boot ONLY; afterwards the
+    // durable state is the source of truth and sites/ is never re-scanned.
+    let registry_dir = args.data_dir.join("registry");
+    let registry = if RegistryStore::exists(&registry_dir) {
+        let store = RegistryStore::open(&registry_dir, &root_key.node_id())?;
+        tracing::info!(
+            "persistent registry loaded from {} (root zone v{}, {} TLDs, {} domains, {} mutations applied)",
+            registry_dir.display(),
+            store.zone().root_version,
+            store.zone().tlds.len(),
+            store.zone().domains.len(),
+            store.mutation_count()
+        );
+        store
+    } else {
+        let store = seed_registry(args, &root_key, &operator_key, &owner_key, &blocklists)?;
+        tracing::info!(
+            "first boot: registry seeded into {} (root zone v{}, {} TLDs, {} domains)",
+            registry_dir.display(),
+            store.zone().root_version,
+            store.zone().tlds.len(),
+            store.zone().domains.len()
+        );
+        store
+    };
+
     // Node registrations survive restarts (and nodes re-register every ~60s).
     let directory = federate_directory::Directory::with_persistence(
-        Some(root.root_public_key.clone()),
+        Some(registry.zone().root_public_key.clone()),
         args.data_dir.join("directory-nodes.json"),
     );
 
     Ok(Store {
-        root,
+        registry: RwLock::new(registry),
+        nonces: NonceStore::default(),
         blocklists,
-        manifests,
-        blocks,
-        registries,
+        root_key,
+        operator_key,
         node_id: node_identity.node_id(),
         started_at: now,
         native_port: args.native_listen.port(),
@@ -472,13 +524,17 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     let store = Arc::new(build_store(&args)?);
-    tracing::info!(
-        "root zone signed: {} TLDs, {} domains, {} blocks (root key {})",
-        store.root.tlds.len(),
-        store.root.domains.len(),
-        store.blocks.len(),
-        store.root.root_public_key
-    );
+    {
+        let registry = store.registry.read().await;
+        tracing::info!(
+            "root zone v{}: {} TLDs, {} domains, {} blocks (root key {})",
+            registry.zone().root_version,
+            registry.zone().tlds.len(),
+            registry.zone().domains.len(),
+            registry.block_count(),
+            registry.zone().root_public_key
+        );
+    }
 
     let app = Router::new()
         .route("/", get(index))
@@ -496,6 +552,24 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/tld-registry/:tld", get(tld_registry))
         .route("/v1/manifest/:hash", get(manifest))
         .route("/v1/block/:hash", get(block))
+        // Runtime mutation surface: nonce challenge, signed mutations, site
+        // package ingest, mutation/audit inspection, registry operations.
+        .route("/v1/mutations/nonce", post(mutation_nonce))
+        .route("/v1/mutations", post(submit_mutation))
+        .route("/v1/mutations/:id", get(mutation_inspect))
+        .route("/v1/mutations/target/:kind/:id", get(mutation_target))
+        .route(
+            "/v1/ingest/package",
+            post(ingest_package).layer(DefaultBodyLimit::max(
+                // hex encoding doubles the payload; leave headroom on top of
+                // the decoded package cap.
+                federate_mutation::MAX_PACKAGE_BYTES * 2 + 1024 * 1024,
+            )),
+        )
+        .route("/v1/registry/status", get(registry_status))
+        .route("/v1/registry/audit", get(registry_audit))
+        .route("/v1/registry/verify", get(registry_verify))
+        .route("/v1/registry/snapshot", post(registry_snapshot))
         // Future hooks (documented, intentionally stubbed):
         .route("/v1/peers", get(peers_stub))
         .route("/v1/applications", get(applications_stub))
@@ -541,26 +615,33 @@ async fn main() -> anyhow::Result<()> {
 async fn index() -> impl IntoResponse {
     axum::response::Html(
         "<h1>Federate Network: Node 1</h1>\
-         <p>Bootstrap/control-plane node and Federate Root Registry.</p>\
-         <p>Endpoints: /health /v1/status /v1/bootstrap /v1/root /v1/tlds /v1/tld/:tld \
+         <p>Bootstrap/control-plane node and Federate Root Registry \
+         (persistent, runtime-mutable, signed).</p>\
+         <p>Read endpoints: /health /v1/status /v1/bootstrap /v1/root /v1/tlds /v1/tld/:tld \
          /v1/tld-check/:tld /v1/blocked /v1/reserved /v1/domains?tld= /v1/domain/:fqdn \
          /v1/manifest/:hash /v1/block/:hash</p>\
-         <p>All registry data is signed; daemons verify, they do not trust this server.</p>",
+         <p>Mutation endpoints: POST /v1/mutations/nonce, POST /v1/mutations, \
+         POST /v1/ingest/package, GET /v1/mutations/:id, GET /v1/registry/status \
+         /v1/registry/audit /v1/registry/verify, POST /v1/registry/snapshot</p>\
+         <p>All registry data is signed; daemons verify, they do not trust this server. \
+         All mutations are signed, nonce-protected, versioned, and audited.</p>",
     )
 }
 
 async fn status(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
+    let registry = s.registry.read().await;
     Json(serde_json::json!({
         "node": "node-1",
         "node_id": s.node_id,
         "native_port": s.native_port,
         "started_at": s.started_at,
-        "root_version": s.root.root_version,
-        "root_public_key": s.root.root_public_key,
-        "tlds": s.root.tlds.len(),
-        "domains": s.root.domains.len(),
-        "manifests": s.manifests.len(),
-        "blocks": s.blocks.len(),
+        "root_version": registry.zone().root_version,
+        "root_public_key": registry.zone().root_public_key,
+        "tlds": registry.zone().tlds.len(),
+        "domains": registry.zone().domains.len(),
+        "manifests": registry.manifest_count(),
+        "blocks": registry.block_count(),
+        "mutations_applied": registry.mutation_count(),
     }))
 }
 
@@ -610,11 +691,12 @@ async fn bootstrap(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
         addrs.dedup();
         addrs
     };
+    let registry = s.registry.read().await;
     Json(serde_json::json!({
-        "network": s.root.network,
+        "network": registry.zone().network,
         "root_url": "/v1/root",
-        "root_version": s.root.root_version,
-        "root_public_key": s.root.root_public_key,
+        "root_version": registry.zone().root_version,
+        "root_public_key": registry.zone().root_public_key,
         "native_port": s.native_port,
         "native_nodes": native_nodes,
         "root_mirrors": mirrors,
@@ -626,11 +708,16 @@ async fn bootstrap(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
 }
 
 async fn root_zone(State(s): State<Arc<Store>>) -> Json<RootZone> {
-    Json(s.root.clone())
+    Json(s.registry.read().await.zone().clone())
 }
 
 async fn tlds(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!(s.root.tlds.values().collect::<Vec<_>>()))
+    let registry = s.registry.read().await;
+    Json(serde_json::json!(registry
+        .zone()
+        .tlds
+        .values()
+        .collect::<Vec<_>>()))
 }
 
 async fn tld_record(
@@ -638,7 +725,10 @@ async fn tld_record(
     AxPath(tld): AxPath<String>,
 ) -> Result<Json<TldRecord>, StatusCode> {
     let tld = tld.trim_start_matches('.').to_ascii_lowercase();
-    s.root
+    s.registry
+        .read()
+        .await
+        .zone()
         .lookup_tld(&tld)
         .cloned()
         .map(Json)
@@ -660,7 +750,8 @@ async fn tld_check(
             }))
         }
     };
-    if let Some(rec) = s.root.lookup_tld(&tld) {
+    let registry = s.registry.read().await;
+    if let Some(rec) = registry.zone().lookup_tld(&tld) {
         return Json(serde_json::json!({
             "tld": tld, "available": false,
             "verdict": rec.status.as_str(),
@@ -680,7 +771,7 @@ async fn tld_check(
     }
     Json(serde_json::json!({
         "tld": tld, "available": true, "verdict": "available",
-        "reason": format!(".{tld} is available for a future TLD application (marketplace not implemented yet)"),
+        "reason": format!(".{tld} is available; the root can delegate it at runtime with `federate tld delegate`"),
     }))
 }
 
@@ -707,8 +798,9 @@ async fn domains_by_tld(
     let filter = q
         .get("tld")
         .map(|t| t.trim_start_matches('.').to_ascii_lowercase());
-    let list: Vec<_> = s
-        .root
+    let registry = s.registry.read().await;
+    let list: Vec<_> = registry
+        .zone()
         .domains
         .values()
         .filter(|d| filter.as_deref().is_none_or(|t| d.tld == t))
@@ -720,7 +812,10 @@ async fn domain_record(
     State(s): State<Arc<Store>>,
     AxPath(fqdn): AxPath<String>,
 ) -> Result<Json<DomainRecord>, StatusCode> {
-    s.lookup_domain(&fqdn.to_ascii_lowercase())
+    s.registry
+        .read()
+        .await
+        .lookup_domain(&fqdn.to_ascii_lowercase())
         .cloned()
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
@@ -733,8 +828,10 @@ async fn tld_registry(
     AxPath(tld): AxPath<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let tld = tld.trim_start_matches('.').to_ascii_lowercase();
-    s.registries
-        .get(&tld)
+    s.registry
+        .read()
+        .await
+        .registry(&tld)
         .map(|(bytes, _)| ([(header::CONTENT_TYPE, "application/json")], bytes.clone()))
         .ok_or(StatusCode::NOT_FOUND)
 }
@@ -748,8 +845,10 @@ async fn manifest(
     State(s): State<Arc<Store>>,
     AxPath(hash): AxPath<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    s.manifests
-        .get(&hash)
+    s.registry
+        .read()
+        .await
+        .manifest(&hash)
         .cloned()
         .map(|b| {
             (
@@ -767,9 +866,10 @@ async fn block(
     State(s): State<Arc<Store>>,
     AxPath(hash): AxPath<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    s.blocks
-        .get(&hash)
-        .cloned()
+    s.registry
+        .read()
+        .await
+        .block(&hash)
         .map(|b| {
             (
                 [
@@ -782,6 +882,203 @@ async fn block(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
+// ---------------------------------------------------------------------------
+// mutation surface
+// ---------------------------------------------------------------------------
+
+/// Map a mutation failure to an HTTP status: authorization failures are 403,
+/// replay/rollback conflicts are 409, missing targets 404, everything else
+/// (malformed, bad transition, policy) 400.
+fn mutation_status(e: &federate_core::FederateError) -> StatusCode {
+    use federate_core::FederateError::*;
+    match e {
+        Unauthorized(_) | InvalidSignature => StatusCode::FORBIDDEN,
+        Replay(_) => StatusCode::CONFLICT,
+        DomainNotFound(_) | TldNotFound { .. } | ManifestNotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::BAD_REQUEST,
+    }
+}
+
+/// Consume the nonce, then run the mutation under the write lock. Content
+/// (blocks + manifest) from a package ingest is stored first so `PublishSite`
+/// finds it; content is content-addressed, so a rejected mutation leaves no
+/// dangling authority, only unreferenced bytes.
+async fn run_mutation(
+    s: &Store,
+    req: MutationRequest,
+    content: Option<(Vec<u8>, Vec<federate_mutation::ContentBlock>)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let now = chrono::Utc::now();
+    if !s.nonces.consume(&req.nonce, now.timestamp()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "accepted": false,
+                "error": "unknown, expired, or already-used nonce; request a fresh challenge at POST /v1/mutations/nonce",
+            })),
+        );
+    }
+    let mut registry = s.registry.write().await;
+    if let Some((manifest_bytes, blocks)) = content {
+        let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
+        if let Err(e) = registry
+            .store_blocks(&blocks)
+            .and_then(|()| registry.store_manifest(&manifest_hash, &manifest_bytes))
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "accepted": false, "error": e.to_string() })),
+            );
+        }
+    }
+    match registry.apply(&req, &s.mutation_ctx(now)) {
+        Ok(event) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "accepted": true,
+                "mutation_id": req.mutation_id,
+                "root_version": registry.zone().root_version,
+                "audit_event": event,
+            })),
+        ),
+        Err(e) => (
+            mutation_status(&e),
+            Json(serde_json::json!({ "accepted": false, "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Challenge half of challenge-response: a single-use nonce the next signed
+/// mutation must embed.
+async fn mutation_nonce(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp();
+    let (nonce, expires_at) = s.nonces.issue(now);
+    Json(serde_json::json!({
+        "nonce": nonce,
+        "expires_at_unix": expires_at,
+        "ttl_secs": federate_mutation::NONCE_TTL_SECS,
+    }))
+}
+
+async fn submit_mutation(
+    State(s): State<Arc<Store>>,
+    Json(req): Json<MutationRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    run_mutation(&s, req, None).await
+}
+
+/// Site package ingest: content blocks + exact owner-signed manifest bytes +
+/// a signed `PublishSite` mutation. Hashes are verified before anything is
+/// stored; the mutation then authorizes the domain record update.
+async fn ingest_package(
+    State(s): State<Arc<Store>>,
+    Json(pkg): Json<SitePackage>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let (manifest_bytes, blocks) = match pkg.decode() {
+        Ok(decoded) => decoded,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "accepted": false, "error": e.to_string() })),
+            )
+        }
+    };
+    run_mutation(&s, pkg.mutation, Some((manifest_bytes, blocks))).await
+}
+
+async fn mutation_inspect(
+    State(s): State<Arc<Store>>,
+    AxPath(id): AxPath<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let registry = s.registry.read().await;
+    let applied = registry.applied(&id).ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!(applied)))
+}
+
+/// Current and next per-target mutation version, so clients can build a
+/// request that advances the target ("domain:eu.pagina", "tld:femboy").
+async fn mutation_target(
+    State(s): State<Arc<Store>>,
+    AxPath((kind, id)): AxPath<(String, String)>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if kind != "domain" && kind != "tld" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let key = format!("{kind}:{}", id.to_ascii_lowercase());
+    let current = s.registry.read().await.target_version(&key);
+    Ok(Json(serde_json::json!({
+        "target": key,
+        "current_version": current,
+        "next_version": current + 1,
+    })))
+}
+
+async fn registry_status(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
+    let registry = s.registry.read().await;
+    Json(serde_json::json!({
+        "root_version": registry.zone().root_version,
+        "generated_at": registry.zone().generated_at,
+        "root_public_key": registry.zone().root_public_key,
+        "tlds": registry.zone().tlds.len(),
+        "domains": registry.zone().domains.len(),
+        "delegated_registries": registry.zone().tlds.values()
+            .filter(|t| t.registry_type != RegistryType::RootManaged).count(),
+        "manifests": registry.manifest_count(),
+        "blocks": registry.block_count(),
+        "mutations_applied": registry.mutation_count(),
+        "audit_events": registry.audit_count(),
+        "registry_dir": registry.dir().display().to_string(),
+        "persistent": true,
+        "seed_is_first_boot_only": true,
+    }))
+}
+
+async fn registry_audit(
+    State(s): State<Arc<Store>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let limit = q
+        .get("limit")
+        .and_then(|l| l.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(500);
+    let registry = s.registry.read().await;
+    Json(serde_json::json!({
+        "total": registry.audit_count(),
+        "events": registry.audit_tail(limit),
+    }))
+}
+
+/// Full self-check of the persistent registry: zone signature, delegated
+/// registries, every manifest hash, every block, every audit signature.
+async fn registry_verify(State(s): State<Arc<Store>>) -> (StatusCode, Json<serde_json::Value>) {
+    let registry = s.registry.read().await;
+    match registry.verify_all(&s.root_key.node_id()) {
+        Ok(report) => (StatusCode::OK, Json(report)),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "verified": false, "error": e.to_string() })),
+        ),
+    }
+}
+
+async fn registry_snapshot(State(s): State<Arc<Store>>) -> (StatusCode, Json<serde_json::Value>) {
+    let registry = s.registry.read().await;
+    match registry.write_snapshot() {
+        Ok(path) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "root_version": registry.zone().root_version,
+                "snapshot": path.display().to_string(),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
 async fn peers_stub() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "peers": [], "note": "peer/CDN discovery arrives in phase 5" }))
 }
@@ -789,6 +1086,6 @@ async fn peers_stub() -> Json<serde_json::Value> {
 async fn applications_stub() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "applications": [],
-        "note": "TLD applications/approval arrive in marketplace phase 2; see docs/en-US/tld-marketplace-roadmap.md"
+        "note": "TLD applications/approval arrive in marketplace phase 2; runtime delegation already works via signed mutations (federate tld delegate)"
     }))
 }

@@ -13,6 +13,8 @@ federate-core = { workspace = true }
 federate-identity = { workspace = true }
 federate-client = { workspace = true }
 federate-naming = { workspace = true }
+federate-mutation = { workspace = true }
+hex = { workspace = true }
 federate-root = { workspace = true }
 federate-manifest = { workspace = true }
 federate-storage = { workspace = true }

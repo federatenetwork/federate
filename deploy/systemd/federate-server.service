@@ -12,7 +12,8 @@ ExecStart=/usr/local/bin/federate-server \
     --sites-dir /var/lib/federate/sites \
     --data-dir /var/lib/federate/data \
     --blocked-tlds /var/lib/federate/blocked_tlds.txt \
-    --blocked-dir /var/lib/federate/blocked
+    --blocked-dir /var/lib/federate/blocked \
+    --native-listen 0.0.0.0:4077
 Restart=on-failure
 RestartSec=3
 Environment=RUST_LOG=info

@@ -1,0 +1,30 @@
+[package]
+name = "federate-mutation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Signed runtime mutations, replay protection, audit log, and the persistent Federate Root Registry store"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rand.workspace = true
+hex.workspace = true
+tracing.workspace = true
+federate-core.workspace = true
+federate-identity.workspace = true
+federate-naming.workspace = true
+federate-root.workspace = true
+federate-registry.workspace = true
+federate-manifest.workspace = true
+federate-storage.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+federate-protocol.workspace = true
+federate-transport.workspace = true
+federate-resolution.workspace = true
+federate-client.workspace = true
+federate-uri.workspace = true

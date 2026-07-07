@@ -128,10 +128,13 @@ Imposta, não apenas recomendada:
   assinatura ainda seja criptograficamente válida; um `expires_at` que não
   pode ser interpretado conta como expirado (fail closed).
 
-Futuras APIs de mutação (registrar/atualizar TLDs e domínios em tempo de
-execução) DEVEM usar adicionalmente nonces emitidos pelo servidor ou
-desafio-resposta, para que uma requisição assinada capturada não possa ser
-reexecutada.
+- **Proteção contra replay de mutações**: mutações do registry em runtime
+  usam adicionalmente nonces de uso único emitidos pelo servidor
+  (desafio-resposta), janela de timestamp de 5 minutos, ids de mutação
+  auto-certificantes persistidos entre reinícios e versões monotônicas por
+  alvo, então uma requisição assinada capturada nunca pode ser reexecutada
+  nem reordenada num rollback. Veja [mutations.md](mutations.md) e
+  [security.md](security.md).
 
 ## Quando a verificação falha
 

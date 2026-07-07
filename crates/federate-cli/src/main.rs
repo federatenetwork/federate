@@ -122,6 +122,21 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SiteCmd,
     },
+    /// Publish a site to the network through Node 1's signed ingest API
+    Publish {
+        #[command(subcommand)]
+        cmd: PublishCmd,
+    },
+    /// Persistent root registry commands (status, audit, snapshots, ingest)
+    Registry {
+        #[command(subcommand)]
+        cmd: RegistryCmd,
+    },
+    /// Signed mutation commands (nonce challenges, inspection)
+    Mutation {
+        #[command(subcommand)]
+        cmd: MutationCmd,
+    },
     /// Open a Federate domain in the default browser (portless URL)
     Open { domain: String },
     /// Show local node identity
@@ -170,6 +185,33 @@ enum TldCmd {
     },
     /// Verify a TLD record's signature against the root key
     Verify { tld: String },
+    /// Delegate a TLD to an operator at runtime (requires the Federate Root
+    /// Key; sends a signed mutation to Node 1)
+    Delegate {
+        tld: String,
+        /// TLD owner public key (hex, 64 chars)
+        #[arg(long)]
+        owner: String,
+        /// TLD operator public key (hex, 64 chars)
+        #[arg(long)]
+        operator: String,
+        /// Directory holding the Federate Root Key (identity.key inside)
+        #[arg(long)]
+        key_dir: std::path::PathBuf,
+        /// Operator display name
+        #[arg(long)]
+        operator_name: Option<String>,
+        /// Registry distribution: delegated_manifest | delegated_native |
+        /// delegated_http
+        #[arg(long, default_value = "delegated_manifest")]
+        registry_type: String,
+        /// Registry endpoint (delegated_native/delegated_http modes)
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Delegation expiry (RFC 3339)
+        #[arg(long)]
+        expires: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +229,82 @@ enum DomainCmd {
     Register { domain: String },
     /// Verify a domain record's signature chain
     Verify { domain: String },
+    /// Point your domain at a new manifest hash (owner-signed mutation).
+    /// The manifest must already be on Node 1 (publish the package first).
+    Update {
+        domain: String,
+        /// New manifest hash (BLAKE3 hex)
+        #[arg(long)]
+        manifest: String,
+        /// Domain owner key directory
+        #[arg(long, default_value = ".federate-owner")]
+        key_dir: std::path::PathBuf,
+    },
+    /// Suspend a domain (TLD operator key or Federate Root Key)
+    Suspend {
+        domain: String,
+        /// Directory holding the operator or root key
+        #[arg(long)]
+        key_dir: std::path::PathBuf,
+    },
+    /// Reinstate a suspended domain (TLD operator key or Federate Root Key)
+    Reinstate {
+        domain: String,
+        /// Directory holding the operator or root key
+        #[arg(long)]
+        key_dir: std::path::PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum PublishCmd {
+    /// Package a site directory and submit it to Node 1: blocks +
+    /// owner-signed manifest + signed publish mutation, in one step
+    Package {
+        /// Site directory (must contain index.html)
+        dir: std::path::PathBuf,
+        /// Domain to publish under, e.g. joao.pagina
+        #[arg(long)]
+        domain: String,
+        /// Owner key directory (identity.key inside; created on first use)
+        #[arg(long, default_value = ".federate-owner")]
+        key_dir: std::path::PathBuf,
+        /// Manifest version
+        #[arg(long, default_value_t = 1)]
+        version: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryCmd {
+    /// Submit a pre-built package directory (from `federate site package`)
+    /// to Node 1's ingest endpoint, signing the publish mutation
+    SubmitPackage {
+        /// Package directory (blocks/ + manifest file named by its hash)
+        package: std::path::PathBuf,
+        /// Owner key directory (must be the key that signed the manifest)
+        #[arg(long, default_value = ".federate-owner")]
+        key_dir: std::path::PathBuf,
+    },
+    /// Show persistent registry status (version, counts, mutation history)
+    Status,
+    /// Show the signed audit log (most recent events)
+    Audit {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Ask Node 1 to write a root zone snapshot and report it
+    Snapshot,
+    /// Ask Node 1 to self-verify the whole persistent registry
+    Verify,
+}
+
+#[derive(Subcommand)]
+enum MutationCmd {
+    /// Request a single-use mutation nonce (challenge-response)
+    Nonce,
+    /// Inspect an applied mutation by id
+    Inspect { id: String },
 }
 
 #[derive(Subcommand)]
@@ -644,6 +762,9 @@ async fn main() {
         Cmd::DelegatedRegistry { cmd } => delegated_registry_cmd(&cli, cmd).await,
         Cmd::Operator { cmd } => operator_cmd(cmd),
         Cmd::Site { cmd } => site_cmd(cmd),
+        Cmd::Publish { cmd } => publish_cmd(&cli, cmd).await,
+        Cmd::Registry { cmd } => registry_cmd(&cli, cmd).await,
+        Cmd::Mutation { cmd } => mutation_cmd(&cli, cmd).await,
         Cmd::Open { domain } => {
             // Accepts fed://... and bare domains; opens the browser through
             // the HTTP compatibility gateway (portless URL).
@@ -805,9 +926,42 @@ async fn tld_cmd(cli: &Ctx, cmd: TldCmd) {
             owner,
             operator,
         } => {
-            println!("`federate tld approve` is admin/seed-data-only in this phase.");
-            println!("Would approve .{tld} with owner={owner} operator={operator}.");
-            println!("Runtime mutation APIs (with signed requests + nonce/challenge replay protection) arrive in marketplace phase 2.");
+            println!("`federate tld approve` is superseded by runtime delegation.");
+            println!("Run (with the Federate Root Key):");
+            println!(
+                "  federate tld delegate {tld} --owner {owner} --operator {operator} --key-dir <root-key-dir>"
+            );
+        }
+        TldCmd::Delegate {
+            tld,
+            owner,
+            operator,
+            key_dir,
+            operator_name,
+            registry_type,
+            endpoint,
+            expires,
+        } => {
+            let tld = federate_naming::validate_tld_name(&tld)
+                .unwrap_or_else(|e| die(&format!("invalid TLD: {e}")));
+            let registry_type = match registry_type.as_str() {
+                "delegated_manifest" => federate_naming::RegistryType::DelegatedManifest,
+                "delegated_native" => federate_naming::RegistryType::DelegatedNative,
+                "delegated_http" => federate_naming::RegistryType::DelegatedHttp,
+                other => die(&format!(
+                    "unsupported registry type '{other}' (use delegated_manifest, delegated_native, or delegated_http)"
+                )),
+            };
+            let action = federate_mutation::MutationAction::DelegateTld {
+                tld: tld.clone(),
+                owner_public_key: owner,
+                operator_public_key: operator,
+                operator_name: operator_name.unwrap_or_else(|| format!("operator of .{tld}")),
+                registry_type,
+                registry_endpoint: endpoint,
+                expires_at: expires,
+            };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
         }
         TldCmd::Block { tld, reason } => {
             println!("`federate tld block` is admin/seed-data-only in this phase.");
@@ -921,6 +1075,34 @@ async fn domain_cmd(cli: &Ctx, cmd: DomainCmd) {
             println!("     registry: {registry_kind} (.{})", rec.tld);
             println!("     owner: {}", rec.owner_public_key);
             println!("     manifest: {}", rec.manifest_hash);
+        }
+        DomainCmd::Update {
+            domain,
+            manifest,
+            key_dir,
+        } => {
+            if !federate_storage::is_valid_hash(&manifest) {
+                die("--manifest must be a 64-char BLAKE3 hex content address");
+            }
+            let action = federate_mutation::MutationAction::UpdateDomainManifest {
+                domain,
+                manifest_hash: manifest,
+            };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
+        }
+        DomainCmd::Suspend { domain, key_dir } => {
+            let action = federate_mutation::MutationAction::SetDomainStatus {
+                domain,
+                status: federate_naming::DomainStatus::Suspended,
+            };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
+        }
+        DomainCmd::Reinstate { domain, key_dir } => {
+            let action = federate_mutation::MutationAction::SetDomainStatus {
+                domain,
+                status: federate_naming::DomainStatus::Active,
+            };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
         }
     }
 }
@@ -1340,6 +1522,394 @@ fn site_cmd(cmd: SiteCmd) {
         parsed.fqdn(),
         owner.node_id()
     );
+}
+
+// ---------------------------------------------------------------------------
+// signed mutations / publishing / persistent registry
+// ---------------------------------------------------------------------------
+
+async fn node_post(
+    bootstrap: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<(u16, serde_json::Value), String> {
+    let url = format!("{}{path}", bootstrap.trim_end_matches('/'));
+    let resp = http()
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    let v = resp.json().await.map_err(|e| e.to_string())?;
+    Ok((status, v))
+}
+
+/// Challenge-response step 1: get a single-use nonce from Node 1.
+async fn fetch_mutation_nonce(cli: &Ctx) -> String {
+    match node_post(
+        &cli.bootstrap,
+        "/v1/mutations/nonce",
+        &serde_json::json!({}),
+    )
+    .await
+    {
+        Ok((200, v)) => match v["nonce"].as_str() {
+            Some(nonce) if !nonce.is_empty() => nonce.to_string(),
+            _ => die("node answered the nonce request without a nonce"),
+        },
+        Ok((code, v)) => die(&format!("nonce request failed ({code}): {v}")),
+        Err(e) => die(&format!("cannot reach {} ({e})", cli.bootstrap)),
+    }
+}
+
+/// Ask the node which version advances this mutation's target.
+async fn next_target_version(cli: &Ctx, action: &federate_mutation::MutationAction) -> u64 {
+    let (kind, id) = action.target();
+    match node_get(
+        &cli.bootstrap,
+        &format!("/v1/mutations/target/{}/{id}", kind.as_str()),
+    )
+    .await
+    {
+        Ok(v) => v["next_version"]
+            .as_u64()
+            .unwrap_or_else(|| die("node answered without a next_version")),
+        Err(e) => die(&format!("cannot query target version ({e})")),
+    }
+}
+
+fn report_mutation_outcome(status: u16, v: &serde_json::Value) {
+    if v["accepted"].as_bool() == Some(true) {
+        println!("[ok] mutation accepted");
+        println!(
+            "     mutation id : {}",
+            v["mutation_id"].as_str().unwrap_or("?")
+        );
+        println!(
+            "     root zone   : v{}",
+            v["root_version"].as_u64().unwrap_or(0)
+        );
+        println!(
+            "     audit event : {}",
+            v["audit_event"]["event_id"].as_str().unwrap_or("?")
+        );
+    } else {
+        die(&format!(
+            "[!!] mutation rejected ({status}): {}",
+            v["error"].as_str().unwrap_or("unknown error")
+        ));
+    }
+}
+
+/// Sign and submit one mutation: fetch nonce + target version, sign the
+/// envelope with the key in `key_dir`, POST it, report the outcome.
+async fn sign_and_submit_mutation(
+    cli: &Ctx,
+    key_dir: &std::path::Path,
+    action: federate_mutation::MutationAction,
+) {
+    let identity = NodeIdentity::load_or_create(key_dir)
+        .unwrap_or_else(|e| die(&format!("cannot load key from {} ({e})", key_dir.display())));
+    let nonce = fetch_mutation_nonce(cli).await;
+    let version = next_target_version(cli, &action).await;
+    let req = federate_mutation::MutationRequest::signed(
+        &identity,
+        &nonce,
+        &chrono::Utc::now().to_rfc3339(),
+        version,
+        action,
+    )
+    .unwrap_or_else(|e| die(&format!("cannot sign mutation: {e}")));
+    match node_post(
+        &cli.bootstrap,
+        "/v1/mutations",
+        &serde_json::to_value(&req).unwrap(),
+    )
+    .await
+    {
+        Ok((status, v)) => report_mutation_outcome(status, &v),
+        Err(e) => die(&format!("cannot submit mutation ({e})")),
+    }
+}
+
+/// Content-address every file of a site dir (shared by `site package` and
+/// `publish package`).
+fn collect_site_blocks(
+    dir: &std::path::Path,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    Vec<federate_mutation::ContentBlock>,
+) {
+    let mut files = std::collections::BTreeMap::new();
+    let mut blocks: Vec<(String, Vec<u8>)> = Vec::new();
+    for file in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let rel = file
+            .path()
+            .strip_prefix(dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes = std::fs::read(file.path())
+            .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", file.path().display())));
+        let hash = federate_storage::hash_bytes(&bytes);
+        files.insert(rel, hash.clone());
+        blocks.push((hash, bytes));
+    }
+    if !files.contains_key("index.html") {
+        die(&format!("{} has no index.html", dir.display()));
+    }
+    (files, blocks)
+}
+
+/// Build the signed publish mutation + package and submit it to the node's
+/// ingest endpoint.
+async fn submit_site_package(
+    cli: &Ctx,
+    owner: &NodeIdentity,
+    domain: &str,
+    manifest_bytes: Vec<u8>,
+    manifest_hash: String,
+    blocks: Vec<(String, Vec<u8>)>,
+) {
+    let action = federate_mutation::MutationAction::PublishSite {
+        domain: domain.to_string(),
+        manifest_hash: manifest_hash.clone(),
+    };
+    let nonce = fetch_mutation_nonce(cli).await;
+    let version = next_target_version(cli, &action).await;
+    let mutation = federate_mutation::MutationRequest::signed(
+        owner,
+        &nonce,
+        &chrono::Utc::now().to_rfc3339(),
+        version,
+        action,
+    )
+    .unwrap_or_else(|e| die(&format!("cannot sign publish mutation: {e}")));
+    let package = federate_mutation::SitePackage {
+        mutation,
+        manifest_hex: hex::encode(&manifest_bytes),
+        blocks: blocks
+            .iter()
+            .map(|(hash, bytes)| federate_mutation::PackageBlock {
+                hash: hash.clone(),
+                data_hex: hex::encode(bytes),
+            })
+            .collect(),
+    };
+    println!(
+        "submitting {domain} to {} ({} blocks, manifest {manifest_hash})",
+        cli.bootstrap,
+        blocks.len()
+    );
+    match node_post(
+        &cli.bootstrap,
+        "/v1/ingest/package",
+        &serde_json::to_value(&package).unwrap(),
+    )
+    .await
+    {
+        Ok((status, v)) => {
+            report_mutation_outcome(status, &v);
+            println!("\nverify it end to end:");
+            println!(
+                "  federate fetch fed://{domain}/ --bootstrap {}",
+                cli.bootstrap
+            );
+        }
+        Err(e) => die(&format!("cannot submit package ({e})")),
+    }
+}
+
+async fn publish_cmd(cli: &Ctx, cmd: PublishCmd) {
+    let PublishCmd::Package {
+        dir,
+        domain,
+        key_dir,
+        version,
+    } = cmd;
+    let parsed = federate_naming::FederateDomain::parse(&domain)
+        .unwrap_or_else(|e| die(&format!("invalid domain: {e}")));
+    let owner = NodeIdentity::load_or_create(&key_dir)
+        .unwrap_or_else(|e| die(&format!("cannot load owner key: {e}")));
+    let (files, blocks) = collect_site_blocks(&dir);
+    let mut manifest = Manifest {
+        domain: parsed.fqdn(),
+        version,
+        entry: "index.html".into(),
+        files,
+        owner_public_key: owner.node_id(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        signature_algorithm: federate_root::SIGNATURE_ALGORITHM.into(),
+        signature: None,
+    };
+    manifest.signature = Some(
+        owner.sign(
+            &manifest
+                .signable_bytes()
+                .unwrap_or_else(|e| die(&format!("cannot canonicalize manifest: {e}"))),
+        ),
+    );
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
+    submit_site_package(
+        cli,
+        &owner,
+        &parsed.fqdn(),
+        manifest_bytes,
+        manifest_hash,
+        blocks,
+    )
+    .await;
+}
+
+async fn registry_cmd(cli: &Ctx, cmd: RegistryCmd) {
+    match cmd {
+        RegistryCmd::SubmitPackage { package, key_dir } => {
+            let owner = NodeIdentity::load_or_create(&key_dir)
+                .unwrap_or_else(|e| die(&format!("cannot load owner key: {e}")));
+
+            // The manifest is the file at the package root named by its own
+            // content address (blocks live under blocks/).
+            let mut manifest_entry: Option<(String, Vec<u8>, Manifest)> = None;
+            for entry in std::fs::read_dir(&package)
+                .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", package.display())))
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file())
+            {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !federate_storage::is_valid_hash(&name) {
+                    continue;
+                }
+                let bytes = std::fs::read(entry.path())
+                    .unwrap_or_else(|e| die(&format!("cannot read manifest: {e}")));
+                if federate_storage::hash_bytes(&bytes) != name {
+                    die(&format!("{name} does not match its own content address"));
+                }
+                let manifest: Manifest = serde_json::from_slice(&bytes)
+                    .unwrap_or_else(|e| die(&format!("{name} is not a manifest: {e}")));
+                manifest_entry = Some((name, bytes, manifest));
+            }
+            let Some((manifest_hash, manifest_bytes, manifest)) = manifest_entry else {
+                die(&format!(
+                    "{} has no manifest file (expected the output of `federate site package`)",
+                    package.display()
+                ));
+            };
+            if manifest.owner_public_key != owner.node_id() {
+                die(&format!(
+                    "the manifest is owned by {} but {} holds {}; sign with the manifest owner's key",
+                    manifest.owner_public_key,
+                    key_dir.display(),
+                    owner.node_id()
+                ));
+            }
+
+            let blocks_dir = package.join("blocks");
+            let mut blocks: Vec<(String, Vec<u8>)> = Vec::new();
+            for entry in std::fs::read_dir(&blocks_dir)
+                .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", blocks_dir.display())))
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file())
+            {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let bytes = std::fs::read(entry.path())
+                    .unwrap_or_else(|e| die(&format!("cannot read block {name}: {e}")));
+                if let Err(e) = federate_storage::verify(&bytes, &name) {
+                    die(&format!("block {name} is corrupted: {e}"));
+                }
+                blocks.push((name, bytes));
+            }
+            let domain = manifest.domain.clone();
+            submit_site_package(cli, &owner, &domain, manifest_bytes, manifest_hash, blocks).await;
+        }
+        RegistryCmd::Status => match node_get(&cli.bootstrap, "/v1/registry/status").await {
+            Ok(v) => pretty(&v),
+            Err(e) => die(&format!("cannot fetch registry status ({e})")),
+        },
+        RegistryCmd::Audit { limit } => {
+            match node_get(&cli.bootstrap, &format!("/v1/registry/audit?limit={limit}")).await {
+                Ok(v) => {
+                    println!(
+                        "audit log: {} event(s) total, showing up to {limit}",
+                        v["total"].as_u64().unwrap_or(0)
+                    );
+                    for e in v["events"].as_array().unwrap_or(&vec![]) {
+                        println!(
+                            "{}  {:<26} {:<8} {:<14} by {}…  mutation {}…",
+                            e["timestamp"].as_str().unwrap_or("?"),
+                            e["action"].as_str().unwrap_or("?"),
+                            e["target_type"].as_str().unwrap_or("?"),
+                            e["target_id"].as_str().unwrap_or("?"),
+                            &e["actor_public_key"].as_str().unwrap_or("?")
+                                [..12.min(e["actor_public_key"].as_str().unwrap_or("?").len())],
+                            &e["mutation_id"].as_str().unwrap_or("?")
+                                [..12.min(e["mutation_id"].as_str().unwrap_or("?").len())],
+                        );
+                    }
+                }
+                Err(e) => die(&format!("cannot fetch audit log ({e})")),
+            }
+        }
+        RegistryCmd::Snapshot => {
+            match node_post(
+                &cli.bootstrap,
+                "/v1/registry/snapshot",
+                &serde_json::json!({}),
+            )
+            .await
+            {
+                Ok((200, v)) => {
+                    println!(
+                        "[ok] snapshot written: {} (root zone v{})",
+                        v["snapshot"].as_str().unwrap_or("?"),
+                        v["root_version"].as_u64().unwrap_or(0)
+                    );
+                }
+                Ok((code, v)) => die(&format!("snapshot failed ({code}): {v}")),
+                Err(e) => die(&format!("cannot request snapshot ({e})")),
+            }
+        }
+        RegistryCmd::Verify => match node_get(&cli.bootstrap, "/v1/registry/verify").await {
+            Ok(v) if v["verified"].as_bool() == Some(true) => {
+                println!("[ok] persistent registry self-verification passed");
+                pretty(&v);
+            }
+            Ok(v) => die(&format!(
+                "[!!] registry verification FAILED: {}",
+                v["error"].as_str().unwrap_or("unknown error")
+            )),
+            Err(e) => die(&format!("cannot verify registry ({e})")),
+        },
+    }
+}
+
+async fn mutation_cmd(cli: &Ctx, cmd: MutationCmd) {
+    match cmd {
+        MutationCmd::Nonce => {
+            match node_post(
+                &cli.bootstrap,
+                "/v1/mutations/nonce",
+                &serde_json::json!({}),
+            )
+            .await
+            {
+                Ok((200, v)) => pretty(&v),
+                Ok((code, v)) => die(&format!("nonce request failed ({code}): {v}")),
+                Err(e) => die(&format!("cannot reach {} ({e})", cli.bootstrap)),
+            }
+        }
+        MutationCmd::Inspect { id } => {
+            match node_get(&cli.bootstrap, &format!("/v1/mutations/{id}")).await {
+                Ok(v) => pretty(&v),
+                Err(_) => die(&format!("mutation {id} not found on this node")),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
