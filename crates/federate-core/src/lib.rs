@@ -55,8 +55,8 @@ pub enum FederateError {
     TldNotFound { tld: String },
     #[error("TLD '{tld}' is not resolvable (status: {status})")]
     TldUnavailable { tld: String, status: String },
-    #[error("TLD '{tld}' is delegated but delegated registry resolution is not implemented yet")]
-    DelegatedRegistryNotImplemented { tld: String },
+    #[error("delegated registry for TLD '{tld}' unavailable: {reason}")]
+    DelegatedRegistryUnavailable { tld: String, reason: String },
     #[error("verification failed at {layer} layer for '{subject}': {reason}")]
     VerificationFailed {
         layer: String,

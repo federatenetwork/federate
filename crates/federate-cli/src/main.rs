@@ -8,7 +8,6 @@ use clap::{Parser, Subcommand};
 use federate_core::{DaemonConfig, DEFAULT_API_ADDR, DEFAULT_BOOTSTRAP_URL};
 use federate_identity::NodeIdentity;
 use federate_manifest::Manifest;
-use federate_naming::DomainRecord;
 use federate_root::RootZone;
 
 #[derive(Parser)]
@@ -105,6 +104,11 @@ enum Cmd {
     Directory {
         #[command(subcommand)]
         cmd: DirectoryCmd,
+    },
+    /// Delegated TLD registry commands (inspect/verify operator registries)
+    DelegatedRegistry {
+        #[command(subcommand)]
+        cmd: DelegatedRegistryCmd,
     },
     /// Open a Federate domain in the default browser (portless URL)
     Open { domain: String },
@@ -264,6 +268,15 @@ enum GatewayCmd {
 }
 
 #[derive(Subcommand)]
+enum DelegatedRegistryCmd {
+    /// Show a delegated TLD's registry: delegation, distribution mode, domains
+    Inspect { tld: String },
+    /// Verify the whole delegation chain: root key -> TLD record -> operator
+    /// registry -> every domain record
+    Verify { tld: String },
+}
+
+#[derive(Subcommand)]
 enum DirectoryCmd {
     /// List nodes in the directory, optionally by role
     List {
@@ -355,19 +368,16 @@ fn parse_target(input: &str) -> federate_uri::FederateUri {
 /// Native-path fetch: full root -> TLD -> domain -> manifest -> block chain
 /// with local verification, no daemon required. Body goes to stdout (or
 /// --output); status goes to stderr so pipes stay clean.
-async fn fetch_cmd(
+/// Build a local verifying resolver (native-first, HTTP fallback). Native
+/// providers are discovered from the bootstrap answer and merged with any
+/// explicitly passed ones.
+async fn build_resolver(
     cli: &Ctx,
-    uri: federate_uri::FederateUri,
-    output: Option<std::path::PathBuf>,
     root_key: Option<String>,
-    trace_on: bool,
     mut native_providers: Vec<String>,
-) {
-    use federate_resolution::{Resolved, Resolver, Trace};
+) -> federate_resolution::Resolver {
     let data_dir = DaemonConfig::default_data_dir();
     std::fs::create_dir_all(&data_dir).ok();
-    // Discover native-protocol peers from the bootstrap answer so the fetch
-    // prefers the native transport even with no --provider flags.
     if let Ok(info) = federate_bootstrap::BootstrapClient::new()
         .fetch(&cli.bootstrap)
         .await
@@ -378,7 +388,7 @@ async fn fetch_cmd(
             }
         }
     }
-    let resolver = Resolver::new(
+    federate_resolution::Resolver::new(
         federate_client::NodeClient::new(&cli.bootstrap),
         &data_dir,
         root_key,
@@ -388,7 +398,19 @@ async fn fetch_cmd(
         federate_directory::DirectoryClient::new(&cli.bootstrap),
         None,
     )
-    .with_native_providers(native_providers);
+    .with_native_providers(native_providers)
+}
+
+async fn fetch_cmd(
+    cli: &Ctx,
+    uri: federate_uri::FederateUri,
+    output: Option<std::path::PathBuf>,
+    root_key: Option<String>,
+    trace_on: bool,
+    native_providers: Vec<String>,
+) {
+    use federate_resolution::{Resolved, Trace};
+    let resolver = build_resolver(cli, root_key, native_providers).await;
     let trace = Trace::default();
     let outcome = if trace_on {
         resolver.resolve_uri_traced(&uri, &trace).await
@@ -525,6 +547,7 @@ async fn main() {
         Cmd::Directory {
             cmd: DirectoryCmd::List { role, healthy },
         } => directory_list(&cli, role, healthy).await,
+        Cmd::DelegatedRegistry { cmd } => delegated_registry_cmd(&cli, cmd).await,
         Cmd::Open { domain } => {
             // Accepts fed://... and bare domains; opens the browser through
             // the HTTP compatibility gateway (portless URL).
@@ -779,33 +802,138 @@ async fn domain_cmd(cli: &Ctx, cmd: DomainCmd) {
             println!("Official-TLD sites are published via sites/ on Node 1 for now.");
         }
         DomainCmd::Verify { domain } => {
-            let zone = fetch_root(&cli.bootstrap)
+            // Full local verification through the resolution engine: root
+            // zone signature, TLD record, registry routing (root-managed or
+            // delegated), and the operator signature on the domain record.
+            let resolver = build_resolver(cli, None, vec![]).await;
+            let rec = resolver
+                .resolve_domain(&domain)
                 .await
-                .unwrap_or_else(|e| die(&format!("cannot fetch root zone ({e})")));
-            verify_domain_chain(&zone, &domain).map(|rec: DomainRecord| {
-                println!("[ok] {domain}: root zone, TLD record, and domain record signatures all valid");
-                println!("     owner: {}", rec.owner_public_key);
-                println!("     manifest: {}", rec.manifest_hash);
-            }).unwrap_or_else(|e| die(&format!("[!!] {e}")));
+                .unwrap_or_else(|e| die(&format!("[!!] {domain}: {e}")));
+            let registry_kind = resolver
+                .root()
+                .await
+                .ok()
+                .and_then(|z| {
+                    z.lookup_tld(&rec.tld)
+                        .map(|t| format!("{:?}", t.registry_type))
+                })
+                .unwrap_or_else(|| "?".into());
+            println!(
+                "[ok] {domain}: root zone, TLD record, registry, and domain record signatures all valid"
+            );
+            println!("     registry: {registry_kind} (.{})", rec.tld);
+            println!("     owner: {}", rec.owner_public_key);
+            println!("     manifest: {}", rec.manifest_hash);
         }
     }
 }
 
-fn verify_domain_chain(zone: &RootZone, domain: &str) -> Result<DomainRecord, String> {
-    zone.verify(&zone.root_public_key)
-        .map_err(|e| format!("root zone verification failed: {e}"))?;
-    let rec = zone
-        .lookup(&domain.to_ascii_lowercase())
-        .ok_or_else(|| format!("{domain} not found in the registry"))?;
-    let tld = zone
-        .tlds
-        .get(&rec.tld)
-        .ok_or_else(|| format!(".{} missing from root zone", rec.tld))?;
-    tld.verify(&zone.root_public_key)
-        .map_err(|e| e.to_string())?;
-    rec.verify(&tld.operator_public_key)
-        .map_err(|e| e.to_string())?;
-    Ok(rec.clone())
+// ---------------------------------------------------------------------------
+// delegated registries
+// ---------------------------------------------------------------------------
+
+async fn delegated_registry_cmd(cli: &Ctx, cmd: DelegatedRegistryCmd) {
+    let (tld, verify_mode) = match cmd {
+        DelegatedRegistryCmd::Inspect { tld } => (tld, false),
+        DelegatedRegistryCmd::Verify { tld } => (tld, true),
+    };
+    let tld = tld.trim_start_matches('.').to_ascii_lowercase();
+    let resolver = build_resolver(cli, None, vec![]).await;
+    let root = resolver
+        .root()
+        .await
+        .unwrap_or_else(|e| die(&format!("cannot load a verified root zone ({e})")));
+    let Some(tld_rec) = root.lookup_tld(&tld) else {
+        die(&format!(".{tld} not found in the Federate root registry"));
+    };
+
+    println!("TLD            : .{tld}");
+    println!("status         : {}", tld_rec.status.as_str());
+    println!("registry type  : {:?}", tld_rec.registry_type);
+    println!("owner key      : {}", tld_rec.owner_public_key);
+    println!(
+        "operator       : {} ({})",
+        tld_rec.operator_name, tld_rec.operator_public_key
+    );
+    if let Some(hash) = &tld_rec.registry_manifest_hash {
+        println!("registry hash  : {hash}");
+    }
+    if !tld_rec.registry_providers.is_empty() {
+        println!("registry nodes : {}", tld_rec.registry_providers.join(", "));
+    }
+    if let Some(endpoint) = &tld_rec.registry_endpoint {
+        println!("registry http  : {endpoint}");
+    }
+    if let Some(expires) = &tld_rec.expires_at {
+        println!("expires        : {expires}");
+    }
+
+    if matches!(
+        tld_rec.registry_type,
+        federate_naming::RegistryType::RootManaged
+    ) {
+        println!(
+            "\n.{tld} is root-managed: its domain records live in the signed root zone; \
+             there is no delegated registry to inspect."
+        );
+        return;
+    }
+
+    if verify_mode {
+        let trusted = resolver.trusted_root_key().await.unwrap_or_default();
+        match tld_rec.verify(&trusted) {
+            Ok(()) => {
+                println!("\n[ok] TLD record signature valid (signed by the Federate Root Key)")
+            }
+            Err(e) => die(&format!("\n[!!] TLD record verification FAILED: {e}")),
+        }
+    }
+
+    match resolver.tld_registry_by_name(&tld).await {
+        Ok(registry) => {
+            println!("\n[ok] registry signature valid (signed by the .{tld} operator key)");
+            println!(
+                "registry v{}, generated {}, {} domain(s):",
+                registry.version,
+                registry.generated_at,
+                registry.domains.len()
+            );
+            let mut failed = 0usize;
+            for (fqdn, rec) in &registry.domains {
+                if verify_mode {
+                    match rec.verify(&tld_rec.operator_public_key) {
+                        Ok(()) => println!(
+                            "  [ok] {fqdn:<24} {:<10} owner {}",
+                            rec.status.as_str(),
+                            rec.owner_public_key
+                        ),
+                        Err(e) => {
+                            failed += 1;
+                            println!("  [!!] {fqdn:<24} record verification FAILED: {e}");
+                        }
+                    }
+                } else {
+                    println!(
+                        "  {fqdn:<24} {:<10} owner {}",
+                        rec.status.as_str(),
+                        rec.owner_public_key
+                    );
+                }
+            }
+            if verify_mode {
+                if failed > 0 {
+                    die(&format!(
+                        "[!!] {failed} domain record(s) under .{tld} failed verification"
+                    ));
+                }
+                println!(
+                    "\n[ok] full chain valid: Federate Root Key -> .{tld} delegation -> operator registry -> domain records"
+                );
+            }
+        }
+        Err(e) => die(&format!("\n[!!] cannot load the .{tld} registry: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -813,10 +941,12 @@ fn verify_domain_chain(zone: &RootZone, domain: &str) -> Result<DomainRecord, St
 // ---------------------------------------------------------------------------
 
 async fn manifest_verify(cli: &Ctx, domain: &str) {
-    let zone = fetch_root(&cli.bootstrap)
+    // Chain-verified record lookup (root-managed and delegated TLDs alike).
+    let resolver = build_resolver(cli, None, vec![]).await;
+    let rec = resolver
+        .resolve_domain(domain)
         .await
-        .unwrap_or_else(|e| die(&format!("cannot fetch root zone ({e})")));
-    let rec = verify_domain_chain(&zone, domain).unwrap_or_else(|e| die(&format!("[!!] {e}")));
+        .unwrap_or_else(|e| die(&format!("[!!] {domain}: {e}")));
     let url = format!(
         "{}/v1/manifest/{}",
         cli.bootstrap.trim_end_matches('/'),

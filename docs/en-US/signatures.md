@@ -16,10 +16,16 @@ signature from the matching private key.
 ```
 Federate Root Key
   → TLD Record        (signed by the Root Key)
-    → Domain Record   (signed by the TLD operator key named in the TLD record)
-      → Site Manifest (signed by the domain owner key named in the domain record)
-        → Content Blocks (verified by BLAKE3 hash listed in the manifest)
+    → TLD Registry    (delegated TLDs only: signed by the TLD operator key)
+      → Domain Record (signed by the TLD operator key named in the TLD record)
+        → Site Manifest (signed by the domain owner key named in the domain record)
+          → Content Blocks (verified by BLAKE3 hash listed in the manifest)
 ```
+
+For root-managed TLDs the registry layer is the signed root zone itself; for
+delegated TLDs it is a separate operator-signed registry document (see
+[tld-hierarchy.md](tld-hierarchy.md)). Either way, each layer's signer is
+named by the layer above it, so no layer can forge the one below.
 
 Node 1 is a **distributor of signed data, not a trusted authority**. The
 daemon trusts valid signatures and content hashes, never server responses.
@@ -41,14 +47,26 @@ embedded in the daemon or exposed by any API.
 Signed by the Root Key. The daemon rejects unsigned or invalidly signed TLD
 records.
 
-### 3. Domain records
+### 3. TLD registries (delegated TLDs)
+
+Signed by the TLD operator key named in the root-signed TLD record. The
+verifier checks: the registry is for the expected TLD; the claimed signer
+equals the authorized operator key; the signature verifies; every entry
+inside actually belongs to that TLD (a registry for `.a` cannot smuggle
+records for `.b`). Live registries also carry a monotonic `version` used
+for rollback protection. A registry that fails any check is discarded
+entirely; unreachable is not the same as invalid (unreachable falls back to
+the last verified cache, invalid fails closed).
+
+### 4. Domain records
 
 Signed by the TLD operator key. Before continuing, the daemon verifies: the
 TLD exists; its record verifies against the Root Key; the domain record's
 signature matches the operator key authorized in that TLD record; the domain
-is `active`; the domain actually belongs to that TLD.
+is `active`; the domain actually belongs to that TLD. Identical rules for
+root-managed and delegated domains; only where the record is stored differs.
 
-### 4. Site manifests
+### 5. Site manifests
 
 Signed by the domain owner key. The daemon verifies: the domain record is
 valid; the fetched manifest bytes hash to the `manifest_hash` in the domain
@@ -56,7 +74,7 @@ record; the manifest's signature is valid; the signer equals the domain
 record's `owner_public_key`; the manifest's `domain` equals the requested
 domain.
 
-### 5. Content blocks
+### 6. Content blocks
 
 Verified by hash: fetched bytes must match the hash in the manifest, and
 cached bytes are re-hashed before every serve. Invalid blocks are rejected
@@ -90,6 +108,10 @@ Enforced, not advisory:
   verified zone (memory + disk cache) and reject a correctly signed but
   *older* zone from any node or mirror. Node 1 derives `root_version` from
   the clock at signing time, so it is monotonic across restarts.
+- **Delegated registry rollback**: the same rule for live delegated TLD
+  registries. The last verified registry is cached per TLD; a correctly
+  signed but *older* registry from any provider is rejected, so a host or
+  mirror cannot rewind a delegated namespace.
 - **Record expiry**: `expires_at` (RFC 3339) on TLD and domain records is
   checked at every resolution (gateway, DNS, registry view, delegated
   fetch). An expired record stops resolving even though its signature is
@@ -103,11 +125,12 @@ signed request cannot be replayed.
 ## When verification fails
 
 The daemon serves a styled **Federate security error page** stating which
-layer failed (root / tld / domain / manifest / content), for which domain,
+layer failed (root / tld / tld-registry / domain / manifest / content), for which domain,
 and why, and does not serve the content. `federate doctor`,
 `federate root verify`, `federate tld verify <tld>`, `federate domain verify
-<domain>`, and `federate manifest verify <domain>` reproduce each check from
-the command line.
+<domain>`, `federate delegated-registry verify <tld>`, and
+`federate manifest verify <domain>` reproduce each check from the command
+line.
 
 ## Future work
 

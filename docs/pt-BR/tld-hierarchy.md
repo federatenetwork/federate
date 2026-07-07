@@ -75,22 +75,56 @@ da internet, e o futuro resolvedor DNS local pode encaminhar com segurança
 tudo o que não for Federate para o DNS normal. Ver
 [blocked-tlds.md](blocked-tlds.md).
 
-## Como registros delegados vão resolver (futuro)
+## Como registros delegados resolvem
 
-Hoje apenas registros `root_managed` resolvem (os domínios vivem na zona raiz
-assinada). Para um TLD delegado, o resolvedor já:
+TLDs delegados resolvem de verdade. Um TLD delegado publica um **registro de
+TLD assinado**: um documento listando todos os registros de domínio que o
+operador emitiu, assinado pela chave de operador nomeada no registro de TLD
+assinado pela raiz. O `registry_type` do registro de TLD diz como esse
+registro é distribuído:
 
-1. encontra o registro de TLD na zona raiz,
-2. confirma que ele é delegado e está ativo,
-3. lê seus `registry_type` / `registry_endpoint` / `registry_manifest_hash`,
-4. …e para com um erro estruturado `DelegatedRegistryNotImplemented` e uma
-   página de erro clara.
+| Modo | Onde o registro vive | Modelo de atualização |
+|---|---|---|
+| `root_managed` | os registros de domínio ficam na própria zona raiz assinada | a raiz re-assina a zona (TLDs oficiais) |
+| `delegated_manifest` | manifest de registro endereçado por conteúdo, fixado por `registry_manifest_hash` | o operador publica novos bytes, a raiz re-assina o registro de TLD com o novo hash |
+| `delegated_native` | providers nativos de registro em `registry_providers` (`GetTldRegistry`) | o operador atualiza livremente; clientes impõem proteção contra rollback de versão |
+| `delegated_http` | endpoint HTTP do operador em `registry_endpoint` (`/v1/tld-registry/:tld`) | gêmeo de compatibilidade do `delegated_native`, mesmo documento assinado |
 
-Na fase 6, o resolvedor buscará registros de domínio no registro do operador
-(endpoint `delegated_http`, ou um `delegated_manifest` assinado), verificará
-cada registro contra a chave de operador autorizada no registro de TLD
-assinado pela raiz e continuará pelo caminho normal de manifest/conteúdo. A
-cadeia de confiança nunca muda: a raiz assina o registro de TLD; a chave de
-operador nomeada nele assina os registros de domínio. Ver
+Resolvendo `fed://eu.femboy` (`.femboy` é a delegação seed neutra de dev):
+
+1. interpretar a URI; extrair `eu.femboy` e `.femboy`,
+2. carregar e verificar a zona raiz assinada contra a chave raiz fixada,
+3. verificar o registro de TLD `.femboy` (assinado pela raiz) e seu
+   status/expiração,
+4. buscar o registro de `.femboy` pelo modo configurado e **verificar a
+   assinatura do operador** contra a chave de operador do registro de TLD,
+5. encontrar `eu.femboy` no registro e verificar a assinatura do operador,
+   o status e a expiração do registro de domínio,
+6. seguir pelo caminho inalterado de manifest/conteúdo (manifest assinado
+   pelo dono, blocos verificados por hash).
+
+O comportamento de falha é assimétrico de propósito:
+
+- **assinatura inválida em qualquer ponto** (registro do TLD, registro de
+  domínio): fail closed, erro de segurança, nada é servido;
+- **registro inacessível**: cai para o último registro verificado em cache;
+  sem nada em cache, uma resposta clara de "registro delegado indisponível";
+- **TLD expirado/revogado/desabilitado/suspenso**: fail closed antes mesmo
+  de buscar o registro;
+- **domínio simplesmente ausente**: a resposta normal de domínio não
+  encontrado.
+
+Registros vivos (`delegated_native`/`delegated_http`) carregam um `version`
+monotônico; clientes rejeitam um registro corretamente assinado porém mais
+antigo do que um já verificado, então nem o host do operador nem um mirror
+conseguem rebobinar o namespace (mesma regra de rollback da zona raiz).
+
+É por isso que a raiz controla **a existência dos TLDs, mas não todos os
+domínios para sempre**: uma vez que `.femboy` é delegado, a chave do
+operador emite e assina domínios sob ele sem pedir nada à raiz; as únicas
+alavancas da raiz são o próprio registro de delegação (status, expiração,
+revogação). Inspecione e verifique a cadeia inteira com
+`federate delegated-registry inspect femboy` e
+`federate delegated-registry verify femboy`. Ver
 [signatures.md](signatures.md) e
 [tld-marketplace-roadmap.md](tld-marketplace-roadmap.md).

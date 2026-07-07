@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eu.femboy - delegated TLD demo</title>
+<style>
+:root{--bg:#FBF6F0;--fg:#21211F;--surface:#E8DEC5;--muted:#544329}
+body{font-family:Georgia,serif;background:var(--bg);color:var(--fg);display:grid;place-items:center;min-height:100vh;margin:0}
+main{max-width:38rem;padding:2rem}
+code{background:var(--surface);padding:.15em .4em;border-radius:4px}
+p.f{color:var(--muted);font-size:.85rem;margin-top:3rem}
+</style>
+</head>
+<body>
+<main>
+<h1>eu.femboy</h1>
+<p>This page resolves through a <strong>delegated TLD registry</strong>, not through the Federate root zone.</p>
+<p>The chain that verified this page:</p>
+<ol>
+<li>Federate Root Key signed the <code>.femboy</code> TLD record (the delegation).</li>
+<li>The <code>.femboy</code> operator key signed the TLD registry and this domain record.</li>
+<li>The domain owner key signed the site manifest.</li>
+<li>Every content block matched its BLAKE3 hash.</li>
+</ol>
+<p>The root decides which TLDs exist. The operator decides which domains exist under its TLD. The owner decides the content. No layer can forge the one below it.</p>
+<p class="f">Federate Network: a technical demo of delegated resolution.</p>
+</main>
+</body>
+</html>

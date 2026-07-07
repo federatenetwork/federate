@@ -17,10 +17,17 @@ correspondente.
 ```
 Federate Root Key
   → TLD Record        (signed by the Root Key)
-    → Domain Record   (signed by the TLD operator key named in the TLD record)
-      → Site Manifest (signed by the domain owner key named in the domain record)
-        → Content Blocks (verified by BLAKE3 hash listed in the manifest)
+    → TLD Registry    (delegated TLDs only: signed by the TLD operator key)
+      → Domain Record (signed by the TLD operator key named in the TLD record)
+        → Site Manifest (signed by the domain owner key named in the domain record)
+          → Content Blocks (verified by BLAKE3 hash listed in the manifest)
 ```
+
+Para TLDs root-managed, a camada de registro é a própria zona raiz assinada;
+para TLDs delegados, é um documento de registro separado assinado pelo
+operador (ver [tld-hierarchy.md](tld-hierarchy.md)). Nos dois casos, o
+assinante de cada camada é nomeado pela camada acima, então nenhuma camada
+consegue forjar a de baixo.
 
 O Node 1 é um **distribuidor de dados assinados, não uma autoridade
 confiável**. O daemon confia em assinaturas válidas e hashes de conteúdo,
@@ -43,15 +50,28 @@ embutida no daemon nem exposta por nenhuma API.
 Assinados pela Chave Raiz. O daemon rejeita registros de TLD sem assinatura
 ou com assinatura inválida.
 
-### 3. Registros de domínio
+### 3. Registros de TLD delegados (TLD registries)
+
+Assinados pela chave de operador nomeada no registro de TLD assinado pela
+raiz. O verificador checa: o registro é do TLD esperado; o assinante alegado
+é igual à chave de operador autorizada; a assinatura confere; toda entrada
+interna pertence de fato àquele TLD (um registro de `.a` não pode
+contrabandear registros de `.b`). Registros vivos também carregam um
+`version` monotônico usado na proteção contra rollback. Um registro que
+falha em qualquer checagem é descartado por inteiro; inacessível não é o
+mesmo que inválido (inacessível cai para o último cache verificado;
+inválido é fail closed).
+
+### 4. Registros de domínio
 
 Assinados pela chave do operador do TLD. Antes de prosseguir, o daemon
 verifica: o TLD existe; seu registro é validado contra a Chave Raiz; a
 assinatura do registro de domínio corresponde à chave de operador autorizada
 naquele registro de TLD; o domínio está `active`; o domínio realmente
-pertence àquele TLD.
+pertence àquele TLD. Regras idênticas para domínios root-managed e
+delegados; só muda onde o registro é guardado.
 
-### 4. Manifests de site
+### 5. Manifests de site
 
 Assinados pela chave do dono do domínio. O daemon verifica: o registro de
 domínio é válido; os bytes do manifest baixado produzem o hash igual ao
@@ -59,7 +79,7 @@ domínio é válido; os bytes do manifest baixado produzem o hash igual ao
 assinante é igual ao `owner_public_key` do registro de domínio; o `domain` do
 manifest é igual ao domínio solicitado.
 
-### 5. Blocos de conteúdo
+### 6. Blocos de conteúdo
 
 Verificados por hash: os bytes baixados devem corresponder ao hash no
 manifest, e os bytes em cache são re-hasheados antes de cada serviço. Blocos
@@ -97,6 +117,11 @@ Imposta, não apenas recomendada:
   assinada porém *mais antiga* vinda de qualquer nó ou mirror. O Node 1 deriva
   o `root_version` do relógio no momento da assinatura, então ele é monotônico
   entre reinicializações.
+- **Rollback de registro delegado**: a mesma regra para registros vivos de
+  TLDs delegados. O último registro verificado fica em cache por TLD; um
+  registro corretamente assinado porém *mais antigo* vindo de qualquer
+  provider é rejeitado, então um host ou mirror não consegue rebobinar um
+  namespace delegado.
 - **Expiração de registros**: o `expires_at` (RFC 3339) nos registros de TLD e
   de domínio é checado em toda resolução (gateway, DNS, visão do registro,
   busca delegada). Um registro expirado para de resolver mesmo que sua
@@ -111,11 +136,12 @@ reexecutada.
 ## Quando a verificação falha
 
 O daemon serve uma **página de erro de segurança do Federate** estilizada,
-indicando qual camada falhou (root / tld / domain / manifest / content), para
+indicando qual camada falhou (root / tld / tld-registry / domain / manifest / content), para
 qual domínio e por quê, e não serve o conteúdo. `federate doctor`,
 `federate root verify`, `federate tld verify <tld>`, `federate domain verify
-<domain>` e `federate manifest verify <domain>` reproduzem cada checagem pela
-linha de comando.
+<domain>`, `federate delegated-registry verify <tld>` e
+`federate manifest verify <domain>` reproduzem cada checagem pela linha de
+comando.
 
 ## Trabalho futuro
 

@@ -9,10 +9,10 @@ federate-client = { workspace = true }
 federate-core = { workspace = true }
 federate-naming = { workspace = true }
 federate-root = { workspace = true }
+federate-identity = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
-federate-identity = { workspace = true }
 chrono = { workspace = true }

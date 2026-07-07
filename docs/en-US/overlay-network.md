@@ -11,7 +11,7 @@ stays as it is; every layer above it is Federate's own.
 | Layer | Normal internet | Federate |
 |---|---|---|
 | Addressing | URLs + DNS names | `fed://` URIs ([federate-uri.md](federate-uri.md)) |
-| Naming authority | ICANN/registrars | signed root zone + TLD operators ([tld-hierarchy.md](tld-hierarchy.md)) |
+| Naming authority | ICANN/registrars | signed root zone + delegated TLD operators with signed registries ([tld-hierarchy.md](tld-hierarchy.md)) |
 | Name resolution | DNS | signed-zone resolution engine (`federate-resolution`) |
 | Application protocol | HTTP(S) | Federate protocol ([native-protocol.md](native-protocol.md)) |
 | Trust | CAs + TLS channel trust | per-object signatures + content addressing ([signatures.md](signatures.md)) |
@@ -22,6 +22,17 @@ stays as it is; every layer above it is Federate's own.
 
 The bottom rows are the point: Federate reuses packet delivery and replaces
 everything people actually touch.
+
+## Federated naming
+
+The namespace itself is federated, not just the infrastructure. The root
+signs which TLDs exist and who operates them; a delegated TLD's operator
+signs its own registry and issues domains without asking the root; each
+domain owner signs their own manifest. Root-managed and delegated domains
+resolve through the same engine and the same verification rules; only where
+the record lives differs. The root's power over a delegated TLD is exactly
+the delegation record: status, expiry, revocation. It cannot forge or edit
+domains inside a delegation, and it does not have to be consulted for them.
 
 ## Roles in the overlay
 

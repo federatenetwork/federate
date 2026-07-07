@@ -34,7 +34,7 @@ cliente                          nó
 - `node_id` é a chave pública do par (hex): identidade, não autoridade. O
   que um nó pode alegar continua limitado pelas assinaturas dos dados.
 - capabilities dizem ao cliente quais requisições valem a pena
-  (`root`, `manifests`, `blocks`, `providers`)
+  (`root`, `manifests`, `blocks`, `providers`, `tld-registries`)
 
 ## Requisições e respostas (v0)
 
@@ -47,6 +47,18 @@ cliente                          nó
 | `GetStatus` | `Status { roles, region, root_version, ... }` | diagnóstico |
 | qualquer coisa | `Error { code, detail }` | `unsupported`, `not-found`, `bad-request`, `unavailable` |
 
+Adicionado na **v1** (registros de TLD delegados; enviado apenas em sessões
+negociadas em v1 ou mais novo):
+
+| Requisição | Resposta | Notas |
+|---|---|---|
+| `GetTldRegistry { tld }` | `TldRegistry { tld, registry_json }` | o receptor DEVE verificar a assinatura do operador contra a chave de operador do registro de TLD assinado pela raiz |
+| `GetDomainRecord { fqdn }` | `DomainRecord { fqdn, record_json }` | um registro assinado pelo operador; prova emissão, não atualidade (só o registro completo carrega a versão de rollback) |
+
+Nós que respondem a essas mensagens anunciam a capability
+`tld-registries`. Um cliente v1 em uma sessão v0 fica no conjunto de
+mensagens v0; a negociação de versão cuida do resto.
+
 Planejado para versões futuras: troca de descoberta de pares, handshakes
 assinados (prova de posse da chave), rate limits por capability,
 push/subscribe para atualizações de zona.
@@ -57,7 +69,8 @@ push/subscribe para atualizações de zona.
 - teto de frame: 68 MiB (blocos são limitados a 64 MiB; o envelope precisa
   de folga)
 - JSON agora, deliberadamente: trivial de depurar, portável em todo lugar.
-  Um encoding binário pode chegar como versão 1 pela mesma negociação, então
+  Um encoding binário pode chegar como uma versão futura pela mesma
+  negociação (a v1 adicionou as mensagens de registro delegado assim), então
   escolher JSON hoje não custa nada amanhã.
 
 ## Transporte
@@ -93,6 +106,13 @@ Zonas raiz e manifests:
 2. **providers nativos** (`GetRoot` / `GetManifest`), na ordem configurada
 3. **endpoint HTTP de compatibilidade** do nó bootstrap, por último
 
+Registros de TLD delegados (v1): registros `delegated_manifest` viajam como
+manifests endereçados por conteúdo pelo caminho exato acima; registros
+vivos são buscados com `GetTldRegistry` nos `registry_providers` do próprio
+TLD primeiro, depois no seu `registry_endpoint` HTTP, com a assinatura do
+operador verificada nos dois casos, cache offline por TLD e proteção contra
+rollback de versão (ver [tld-hierarchy.md](tld-hierarchy.md)).
+
 Blocos de conteúdo:
 
 1. **cache local** (hash re-verificado na leitura)
@@ -125,8 +145,9 @@ provider.
 ## Servindo o protocolo
 
 O `federate-server` (Node 1) e o `federate-noded` escutam nativamente
-(porta padrão `4077`) e respondem `GetRoot`, `GetManifest`, `GetBlock` e
-`GetStatus` a partir dos mesmos stores verificados que suas rotas HTTP usam.
+(porta padrão `4077`) e respondem `GetRoot`, `GetManifest`, `GetBlock`,
+`GetTldRegistry`, `GetDomainRecord` e `GetStatus` a partir dos mesmos stores
+verificados que suas rotas HTTP usam.
 A autoridade raiz é antes de tudo um nó Federate; HTTP é a porta de
 compatibilidade dela. Existe uma engine de resolução e um conjunto de
 stores; as superfícies nativa e de compatibilidade são duas portas para a

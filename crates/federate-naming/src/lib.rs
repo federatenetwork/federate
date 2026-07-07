@@ -102,14 +102,22 @@ pub enum TldMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistryType {
-    /// Domains live in the Federate root zone itself (MVP for official TLDs).
+    /// Domains live in the Federate root zone itself (official TLDs).
     RootManaged,
-    /// Registry published as a signed manifest (placeholder, phase 6).
+    /// Registry published as a content-addressed signed registry manifest
+    /// (`registry_manifest_hash` in the TLD record). Immutable per root zone
+    /// version: updating the registry means the root re-signs the TLD record
+    /// with the new hash.
     DelegatedManifest,
-    /// Registry served by an operator HTTP endpoint (placeholder, phase 6).
+    /// Registry served live by native Federate registry providers
+    /// (`registry_providers` in the TLD record, host:port). The operator can
+    /// update domains without a root re-sign; clients verify the operator
+    /// signature on the registry and enforce version rollback protection.
+    DelegatedNative,
+    /// Registry served by an operator HTTP endpoint (`registry_endpoint`).
+    /// Compatibility twin of `DelegatedNative`: same signed registry
+    /// document, fetched over HTTP instead of the native protocol.
     DelegatedHttp,
-    /// Registry served by a Federate node (future).
-    DelegatedNode,
     /// Manually administered offline registry (future).
     OfflineManual,
 }

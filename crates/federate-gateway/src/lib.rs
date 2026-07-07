@@ -140,15 +140,19 @@ async fn handle(
                 esc(&status)
             ),
         ),
-        Ok(Resolved::DelegatedNotImplemented { domain, tld }) => styled_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "Delegated registry not active yet",
+        Ok(Resolved::DelegatedUnavailable {
+            domain,
+            tld,
+            reason,
+        }) => styled_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Delegated registry unavailable",
             &format!(
-                "<code>.{}</code> exists in the Federate root registry, but delegated registry \
-                 resolution is not active yet, so <code>{}</code> cannot be resolved. \
-                 Delegated registries arrive in a future phase.",
+                "<code>.{}</code> is delegated to an operator, but its registry cannot be \
+                 used right now, so <code>{}</code> cannot be resolved:<br><code>{}</code>",
                 esc(&tld),
-                esc(&domain)
+                esc(&domain),
+                esc(&reason)
             ),
         ),
         Ok(Resolved::DomainNotFound { domain }) => styled_error(
@@ -284,6 +288,7 @@ mod tests {
                 registry_type: federate_naming::RegistryType::RootManaged,
                 registry_endpoint: None,
                 registry_manifest_hash: None,
+                registry_providers: Vec::new(),
                 policy_hash: None,
                 pricing: None,
                 created_at: "t".into(),

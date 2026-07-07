@@ -31,6 +31,9 @@ pub const MAX_REQUESTS_PER_CONNECTION: usize = 10_000;
 /// One message-oriented connection to a peer.
 pub struct Connection {
     stream: TcpStream,
+    /// Protocol version negotiated in the handshake. 0 until the `Welcome`
+    /// arrives; callers gate version-specific messages on this.
+    version: u16,
 }
 
 impl Connection {
@@ -45,7 +48,7 @@ impl Connection {
             .await
             .map_err(|_| FederateError::Network("connect timeout".into()))?
             .map_err(|e| FederateError::Network(format!("connect failed: {e}")))?;
-        let mut conn = Self { stream };
+        let mut conn = Self { stream, version: 0 };
         conn.send(&Message::Hello {
             versions: proto::SUPPORTED_VERSIONS.to_vec(),
             node_id: identity.node_id(),
@@ -60,6 +63,7 @@ impl Connection {
                         "peer chose unsupported protocol version {version}"
                     )));
                 }
+                conn.version = *version;
             }
             Message::Error { code, detail } => {
                 return Err(FederateError::Network(format!(
@@ -104,6 +108,11 @@ impl Connection {
         self.send(msg).await?;
         self.recv().await
     }
+
+    /// Protocol version negotiated for this session.
+    pub fn version(&self) -> u16 {
+        self.version
+    }
 }
 
 /// What a node answers native-protocol requests with. Implementations map
@@ -137,7 +146,7 @@ pub async fn serve(listener: TcpListener, service: Arc<dyn NodeService>, agent: 
         let service = service.clone();
         let agent = agent.clone();
         tokio::spawn(async move {
-            let mut conn = Connection { stream };
+            let mut conn = Connection { stream, version: 0 };
             if let Err(e) = serve_conn(&mut conn, service, &agent).await {
                 tracing::debug!("native connection from {peer} ended: {e}");
             }
@@ -237,7 +246,7 @@ mod tests {
                 capabilities,
                 ..
             } => {
-                assert_eq!(version, 0);
+                assert_eq!(version, *proto::SUPPORTED_VERSIONS.first().unwrap());
                 assert_eq!(capabilities, vec![proto::Capability::Blocks]);
             }
             other => panic!("expected Welcome, got {other:?}"),
@@ -274,6 +283,7 @@ mod tests {
 
         let mut conn = Connection {
             stream: TcpStream::connect(addr).await.unwrap(),
+            version: 0,
         };
         conn.send(&Message::Hello {
             versions: vec![9999],

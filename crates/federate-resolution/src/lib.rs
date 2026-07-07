@@ -46,8 +46,14 @@ pub enum Resolved {
     TldNotFound { tld: String },
     /// TLD exists but is not resolvable (reserved/blocked/disabled/pending/expired/revoked).
     TldUnavailable { tld: String, status: String },
-    /// TLD is delegated but delegated registry resolution is not active yet.
-    DelegatedNotImplemented { domain: String, tld: String },
+    /// TLD is delegated but its registry cannot be used right now: every
+    /// provider unreachable and nothing cached, or an unsupported registry
+    /// mode. Signature failures are `SecurityFailure`, never this.
+    DelegatedUnavailable {
+        domain: String,
+        tld: String,
+        reason: String,
+    },
     /// TLD resolvable but domain not registered.
     DomainNotFound { domain: String },
     /// Domain exists but is not active (suspended/expired/revoked/...).
@@ -69,6 +75,9 @@ pub struct Resolver {
     root_cache: RootCache,
     blocks: BlockStore,
     manifest_dir: PathBuf,
+    /// Last verified delegated TLD registries (`<tld>.json`), so delegated
+    /// sites keep resolving when their registry providers are offline.
+    registries_dir: PathBuf,
     root: RwLock<Option<Arc<RootZone>>>,
     /// Pinned Federate Root public key (trust anchor). Configured explicitly
     /// or pinned on first use (TOFU) and persisted to disk.
@@ -127,6 +136,8 @@ impl Resolver {
     ) -> Result<Self> {
         let manifest_dir = data_dir.join("manifests");
         std::fs::create_dir_all(&manifest_dir)?;
+        let registries_dir = data_dir.join("registries");
+        std::fs::create_dir_all(&registries_dir)?;
         let trusted_key_path = data_dir.join("trusted-root-key");
         let trusted = configured_root_key
             .or_else(|| {
@@ -140,6 +151,7 @@ impl Resolver {
             root_cache: RootCache::new(data_dir),
             blocks: BlockStore::new(data_dir)?,
             manifest_dir,
+            registries_dir,
             root: RwLock::new(None),
             trusted_root_key: RwLock::new(trusted),
             trusted_key_path,
@@ -406,6 +418,319 @@ impl Resolver {
         Ok(manifest)
     }
 
+    // -----------------------------------------------------------------
+    // Delegated TLD registries
+    // -----------------------------------------------------------------
+
+    /// The operator-signed domain record for `fqdn`, located through its
+    /// TLD's registry: the signed root zone for root-managed TLDs, the
+    /// operator's signed registry for delegated TLDs. The record's own
+    /// signature and status are verified by the caller, identically for
+    /// both paths.
+    async fn locate_record(
+        &self,
+        root: &RootZone,
+        tld_rec: &federate_root::TldRecord,
+        fqdn: &str,
+        t: Option<&Trace>,
+    ) -> Result<federate_naming::DomainRecord> {
+        match tld_rec.registry_type {
+            RegistryType::RootManaged => {
+                trace(
+                    t,
+                    format!(
+                        "registry for .{}: root-managed (records live in the signed root zone)",
+                        tld_rec.tld
+                    ),
+                );
+                root.lookup(fqdn)
+                    .cloned()
+                    .ok_or_else(|| FederateError::DomainNotFound(fqdn.to_string()))
+            }
+            RegistryType::DelegatedManifest
+            | RegistryType::DelegatedNative
+            | RegistryType::DelegatedHttp => {
+                let registry = self.tld_registry(tld_rec, t).await?;
+                registry
+                    .lookup(fqdn)
+                    .cloned()
+                    .ok_or_else(|| FederateError::DomainNotFound(fqdn.to_string()))
+            }
+            RegistryType::OfflineManual => Err(FederateError::DelegatedRegistryUnavailable {
+                tld: tld_rec.tld.clone(),
+                reason: "registry is administered offline and cannot be resolved".into(),
+            }),
+        }
+    }
+
+    /// The verified signed registry of a delegated TLD.
+    ///
+    /// Fail-closed rules: an operator-signature failure is returned as
+    /// `VerificationFailed` and never falls back to anything; only
+    /// reachability failures fall back (to the last verified cached
+    /// registry, then to `DelegatedRegistryUnavailable`).
+    ///
+    /// Modes:
+    /// - `delegated_manifest`: content-addressed bytes pinned by the
+    ///   root-signed TLD record; fetched like any manifest (cache, native
+    ///   providers, HTTP fallback), then operator-signature verified.
+    /// - `delegated_native` / `delegated_http`: live registry from the TLD's
+    ///   own providers; verified, then version rollback protection against
+    ///   the last verified cached copy (an operator or host cannot rewind
+    ///   the namespace we already saw).
+    pub async fn tld_registry(
+        &self,
+        tld_rec: &federate_root::TldRecord,
+        t: Option<&Trace>,
+    ) -> Result<federate_registry::TldRegistry> {
+        let tld = &tld_rec.tld;
+        let operator = &tld_rec.operator_public_key;
+        match tld_rec.registry_type {
+            RegistryType::DelegatedManifest => {
+                let Some(hash) = tld_rec.registry_manifest_hash.as_deref() else {
+                    return Err(FederateError::DelegatedRegistryUnavailable {
+                        tld: tld.clone(),
+                        reason: "TLD record declares delegated_manifest but carries no registry_manifest_hash".into(),
+                    });
+                };
+                let bytes = self.manifest_bytes(hash).await.map_err(|e| match e {
+                    // Tampering stays a hard failure; only reachability
+                    // becomes the structured unavailable error.
+                    FederateError::HashMismatch { .. }
+                    | FederateError::VerificationFailed { .. } => e,
+                    other => FederateError::DelegatedRegistryUnavailable {
+                        tld: tld.clone(),
+                        reason: format!("registry manifest {hash} not fetchable: {other}"),
+                    },
+                })?;
+                let registry: federate_registry::TldRegistry = serde_json::from_slice(&bytes)
+                    .map_err(|e| FederateError::VerificationFailed {
+                        layer: "tld-registry".into(),
+                        subject: format!(".{tld}"),
+                        reason: format!("registry manifest is not a valid registry document: {e}"),
+                    })?;
+                registry.verify(tld, operator)?;
+                trace(
+                    t,
+                    format!(
+                        "registry for .{tld}: content-addressed registry manifest {} verified (operator-signed, v{}, {} domains)",
+                        short(hash),
+                        registry.version,
+                        registry.domains.len()
+                    ),
+                );
+                Ok(registry)
+            }
+            RegistryType::DelegatedNative | RegistryType::DelegatedHttp => {
+                match self.fetch_registry_live(tld_rec, t).await {
+                    Ok(registry) => {
+                        if let Some(cached) = self.cached_registry(tld_rec) {
+                            if registry.version < cached.version {
+                                tracing::warn!(
+                                    tld = %tld,
+                                    fetched = registry.version,
+                                    cached = cached.version,
+                                    "REJECTED delegated registry older than the last verified one (possible replay); keeping the newer registry"
+                                );
+                                trace(
+                                    t,
+                                    format!(
+                                        "registry for .{tld}: fetched v{} is OLDER than verified cache v{}; keeping cache (rollback protection)",
+                                        registry.version, cached.version
+                                    ),
+                                );
+                                return Ok(cached);
+                            }
+                        }
+                        self.store_registry(&registry);
+                        Ok(registry)
+                    }
+                    // Signature failures fail closed; never fall back past them.
+                    Err(e @ FederateError::VerificationFailed { .. }) => Err(e),
+                    Err(e) => {
+                        if let Some(cached) = self.cached_registry(tld_rec) {
+                            trace(
+                                t,
+                                format!(
+                                    "registry for .{tld}: no provider reachable ({e}); using last verified cached registry v{}",
+                                    cached.version
+                                ),
+                            );
+                            return Ok(cached);
+                        }
+                        Err(e)
+                    }
+                }
+            }
+            other => Err(FederateError::DelegatedRegistryUnavailable {
+                tld: tld.clone(),
+                reason: format!("registry type {other:?} is not resolvable"),
+            }),
+        }
+    }
+
+    /// Verified signed registry of a delegated TLD by name: root zone →
+    /// TLD record → registry. Relay surface for nodes answering
+    /// `GetTldRegistry` and for CLI inspection; the registry returned here
+    /// has already passed operator-signature verification.
+    pub async fn tld_registry_by_name(&self, tld: &str) -> Result<federate_registry::TldRegistry> {
+        let root = self.root().await?;
+        let tld_rec = root
+            .lookup_tld(tld)
+            .ok_or_else(|| FederateError::TldNotFound { tld: tld.into() })?;
+        self.tld_registry(tld_rec, None).await
+    }
+
+    /// Fetch a live delegated registry: the TLD's native registry providers
+    /// first, then its HTTP compatibility endpoint. Every answer is
+    /// operator-signature verified before it counts; a forged answer fails
+    /// the whole fetch closed (it is not a reachability problem).
+    async fn fetch_registry_live(
+        &self,
+        tld_rec: &federate_root::TldRecord,
+        t: Option<&Trace>,
+    ) -> Result<federate_registry::TldRegistry> {
+        let tld = &tld_rec.tld;
+        for addr in &tld_rec.registry_providers {
+            match self
+                .fetch_registry_native(addr, tld, &tld_rec.operator_public_key)
+                .await
+            {
+                Ok(registry) => {
+                    trace(
+                        t,
+                        format!(
+                            "registry for .{tld}: fetched over NATIVE protocol from {addr}, operator signature verified (v{}, {} domains)",
+                            registry.version,
+                            registry.domains.len()
+                        ),
+                    );
+                    return Ok(registry);
+                }
+                Err(e @ FederateError::VerificationFailed { .. }) => return Err(e),
+                Err(e) => trace(
+                    t,
+                    format!("registry for .{tld}: native registry provider {addr} failed ({e}); trying next"),
+                ),
+            }
+        }
+        if let Some(endpoint) = tld_rec.registry_endpoint.as_deref() {
+            match federate_registry::DelegatedRegistryClient::new(
+                endpoint,
+                &tld_rec.operator_public_key,
+            )
+            .fetch_registry(tld)
+            .await
+            {
+                Ok(registry) => {
+                    trace(
+                        t,
+                        format!(
+                            "registry for .{tld}: fetched over HTTP compatibility from {endpoint}, operator signature verified (v{}, {} domains)",
+                            registry.version,
+                            registry.domains.len()
+                        ),
+                    );
+                    return Ok(registry);
+                }
+                Err(e @ FederateError::VerificationFailed { .. }) => return Err(e),
+                Err(e) => trace(
+                    t,
+                    format!("registry for .{tld}: http registry endpoint failed ({e})"),
+                ),
+            }
+        }
+        Err(FederateError::DelegatedRegistryUnavailable {
+            tld: tld.clone(),
+            reason: "no registry provider answered".into(),
+        })
+    }
+
+    /// One native-protocol registry fetch. Requires a session negotiated at
+    /// protocol v1 or newer (v0 peers do not know the registry messages).
+    async fn fetch_registry_native(
+        &self,
+        addr: &str,
+        tld: &str,
+        operator_public_key: &str,
+    ) -> Result<federate_registry::TldRegistry> {
+        let (mut conn, _welcome) =
+            federate_transport::Connection::connect(addr, &self.identity, AGENT).await?;
+        if conn.version() < federate_protocol::VERSION_DELEGATED_REGISTRIES {
+            return Err(FederateError::Network(format!(
+                "provider speaks protocol v{} (< v{}); no delegated registry support",
+                conn.version(),
+                federate_protocol::VERSION_DELEGATED_REGISTRIES
+            )));
+        }
+        match conn
+            .request(&federate_protocol::Message::GetTldRegistry {
+                tld: tld.to_string(),
+            })
+            .await?
+        {
+            federate_protocol::Message::TldRegistry { registry_json, .. } => {
+                if registry_json.len() as u64 > federate_registry::MAX_REGISTRY_BYTES {
+                    return Err(FederateError::Network(format!(
+                        "registry exceeds {} bytes",
+                        federate_registry::MAX_REGISTRY_BYTES
+                    )));
+                }
+                let registry: federate_registry::TldRegistry =
+                    serde_json::from_slice(&registry_json).map_err(|e| {
+                        FederateError::Network(format!("provider sent malformed registry: {e}"))
+                    })?;
+                registry.verify(tld, operator_public_key)?;
+                Ok(registry)
+            }
+            federate_protocol::Message::Error { code, detail } => Err(FederateError::Network(
+                format!("registry provider answered {code:?}: {detail}"),
+            )),
+            other => Err(FederateError::Network(format!(
+                "registry provider answered unexpectedly: {other:?}"
+            ))),
+        }
+    }
+
+    /// Cache path for a TLD's last verified registry. TLD names come from
+    /// the verified root zone, but re-validate anyway so nothing unvetted
+    /// ever forms a filesystem path.
+    fn registry_cache_path(&self, tld: &str) -> Option<PathBuf> {
+        federate_naming::validate_tld_name(tld)
+            .ok()
+            .map(|t| self.registries_dir.join(format!("{t}.json")))
+    }
+
+    /// Last verified cached registry for this TLD, re-verified on load
+    /// against the CURRENT operator key from the root-signed TLD record: a
+    /// registry cached under a rotated-out or revoked operator key is
+    /// silently discarded.
+    fn cached_registry(
+        &self,
+        tld_rec: &federate_root::TldRecord,
+    ) -> Option<federate_registry::TldRegistry> {
+        let bytes = std::fs::read(self.registry_cache_path(&tld_rec.tld)?).ok()?;
+        let registry: federate_registry::TldRegistry = serde_json::from_slice(&bytes).ok()?;
+        registry
+            .verify(&tld_rec.tld, &tld_rec.operator_public_key)
+            .ok()?;
+        Some(registry)
+    }
+
+    /// Best-effort snapshot (write-then-rename so a crash never truncates
+    /// the last good registry).
+    fn store_registry(&self, registry: &federate_registry::TldRegistry) {
+        let Some(path) = self.registry_cache_path(&registry.tld) else {
+            return;
+        };
+        if let Ok(bytes) = serde_json::to_vec_pretty(registry) {
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, bytes).is_ok() {
+                std::fs::rename(&tmp, &path).ok();
+            }
+        }
+    }
+
     async fn block(&self, hash: &str) -> Result<Vec<u8>> {
         self.block_traced(hash, None).await
     }
@@ -590,10 +915,17 @@ impl Resolver {
                 },
             });
         }
-        let record = root
-            .lookup(&domain.fqdn())
-            .ok_or_else(|| FederateError::DomainNotFound(domain.fqdn()))?;
+        let record = self
+            .locate_record(&root, tld_rec, &domain.fqdn(), None)
+            .await?;
         record.verify(&tld_rec.operator_public_key)?;
+        if record.tld != domain.tld {
+            return Err(FederateError::VerificationFailed {
+                layer: "domain".into(),
+                subject: domain.fqdn(),
+                reason: "domain record belongs to a different TLD".into(),
+            });
+        }
         if !record.status.is_resolvable() || record.is_expired() {
             return Err(FederateError::TldUnavailable {
                 tld: domain.tld.clone(),
@@ -604,7 +936,7 @@ impl Resolver {
                 },
             });
         }
-        Ok(record.clone())
+        Ok(record)
     }
 
     /// Verified list of file paths a domain publishes (manifest keys). Goes
@@ -740,23 +1072,40 @@ impl Resolver {
             ),
         );
 
-        // 6. Route by registry type.
-        match tld_rec.registry_type {
-            RegistryType::RootManaged => {}
-            // Delegated registries: phase 6. Clear structured error for now.
-            _ => {
-                return Ok(Resolved::DelegatedNotImplemented {
-                    domain: fqdn,
-                    tld: domain.tld.clone(),
-                });
+        // 6-7. Domain record through the TLD's registry: the signed root
+        // zone for root-managed TLDs, the operator's signed registry for
+        // delegated TLDs. Same verification either way.
+        let record = match self.locate_record(&root, tld_rec, &fqdn, t).await {
+            Ok(r) => r,
+            Err(FederateError::DomainNotFound(_)) => {
+                return Ok(Resolved::DomainNotFound { domain: fqdn })
             }
-        }
-
-        // 7. Domain record from the root-managed registry.
-        let record = match root.lookup(&fqdn) {
-            Some(r) => r,
-            None => return Ok(Resolved::DomainNotFound { domain: fqdn }),
+            Err(FederateError::VerificationFailed { layer, reason, .. }) => {
+                return Ok(Resolved::SecurityFailure {
+                    domain: fqdn,
+                    layer,
+                    reason,
+                })
+            }
+            Err(FederateError::HashMismatch { expected, actual }) => {
+                return Ok(Resolved::SecurityFailure {
+                    domain: fqdn,
+                    layer: "tld-registry".into(),
+                    reason: format!(
+                        "registry manifest hash mismatch (expected {expected}, got {actual})"
+                    ),
+                })
+            }
+            Err(FederateError::DelegatedRegistryUnavailable { tld, reason }) => {
+                return Ok(Resolved::DelegatedUnavailable {
+                    domain: fqdn,
+                    tld,
+                    reason,
+                })
+            }
+            Err(e) => return Err(e),
         };
+        let record = &record;
 
         // Domain record signed by the authorized TLD operator + consistent.
         if let Err(FederateError::VerificationFailed { layer, reason, .. }) =
@@ -910,6 +1259,7 @@ mod tests {
             registry_type: federate_naming::RegistryType::RootManaged,
             registry_endpoint: None,
             registry_manifest_hash: None,
+            registry_providers: Vec::new(),
             policy_hash: None,
             pricing: None,
             created_at: "t".into(),
@@ -1018,12 +1368,15 @@ mod tests {
     }
 
     /// Test-only native node serving the whole chain: signed root zone,
-    /// content-addressed manifests, content blocks. What Node 1 (or any
-    /// full node) looks like over the native protocol.
+    /// content-addressed manifests, content blocks, and delegated TLD
+    /// registries. What Node 1 (or any full node) looks like natively.
+    #[derive(Default)]
     struct FullService {
-        zone: RootZone,
+        zone: Option<RootZone>,
         manifests: std::collections::HashMap<String, Vec<u8>>,
         blocks: std::collections::HashMap<String, Vec<u8>>,
+        /// tld -> signed registry JSON bytes
+        registries: std::collections::HashMap<String, Vec<u8>>,
     }
 
     #[federate_transport::async_trait]
@@ -1036,6 +1389,7 @@ mod tests {
                 federate_protocol::Capability::Root,
                 federate_protocol::Capability::Manifests,
                 federate_protocol::Capability::Blocks,
+                federate_protocol::Capability::TldRegistries,
             ]
         }
         async fn handle(&self, req: federate_protocol::Message) -> federate_protocol::Message {
@@ -1045,8 +1399,11 @@ mod tests {
                 detail: detail.into(),
             };
             match req {
-                Message::GetRoot => Message::Root {
-                    zone_json: serde_json::to_vec(&self.zone).unwrap(),
+                Message::GetRoot => match &self.zone {
+                    Some(zone) => Message::Root {
+                        zone_json: serde_json::to_vec(zone).unwrap(),
+                    },
+                    None => not_found("no zone here"),
                 },
                 Message::GetManifest { hash } => match self.manifests.get(&hash) {
                     Some(bytes) => Message::Manifest {
@@ -1062,9 +1419,16 @@ mod tests {
                     },
                     None => not_found("no such block"),
                 },
+                Message::GetTldRegistry { tld } => match self.registries.get(&tld) {
+                    Some(bytes) => Message::TldRegistry {
+                        tld,
+                        registry_json: bytes.clone(),
+                    },
+                    None => not_found("no registry for this TLD here"),
+                },
                 _ => Message::Error {
                     code: ErrorCode::Unsupported,
-                    detail: "root/manifests/blocks only".into(),
+                    detail: "root/manifests/blocks/registries only".into(),
                 },
             }
         }
@@ -1261,9 +1625,10 @@ mod tests {
         let zone = signed_zone(&keys, 1, BTreeMap::from([("puro.fed".to_string(), record)]));
 
         let provider = spawn_native(FullService {
-            zone,
+            zone: Some(zone),
             manifests: std::collections::HashMap::from([(manifest_hash, manifest_bytes)]),
             blocks: std::collections::HashMap::from([(block_hash, block.clone())]),
+            ..Default::default()
         })
         .await;
 
@@ -1437,9 +1802,11 @@ mod tests {
             let fqdn = format!("{label}.{tld}");
             domains.insert(fqdn.clone(), signed_domain(&keys, &fqdn, None));
         }
-        // A delegated TLD: resolution routes it to the placeholder outcome.
+        // A delegated TLD with no reachable registry provider anywhere:
+        // resolution must answer with the structured unavailable outcome.
         let mut delegated = signed_tld(&keys, "femboy");
         delegated.registry_type = federate_naming::RegistryType::DelegatedHttp;
+        delegated.registry_endpoint = Some("http://127.0.0.1:1".into());
         delegated.signature = Some(keys.root.sign(&delegated.signable_bytes().unwrap()));
         tlds.insert("femboy".into(), delegated);
 
@@ -1483,11 +1850,12 @@ mod tests {
             );
         }
 
-        // Delegated TLD placeholder: structured outcome, not an error.
+        // Delegated TLD whose registry is unreachable (and not cached):
+        // structured unavailable outcome, not a panic, not silent success.
         let uri = federate_uri::FederateUri::parse("fed://store.femboy").unwrap();
         assert!(matches!(
             resolver.resolve_uri(&uri).await.unwrap(),
-            Resolved::DelegatedNotImplemented { tld, .. } if tld == "femboy"
+            Resolved::DelegatedUnavailable { tld, .. } if tld == "femboy"
         ));
 
         // Unknown TLD still fails cleanly through the same path.
@@ -1603,5 +1971,577 @@ mod tests {
             resolver.resolve("not a host!!", "/").await.unwrap(),
             Resolved::NotFederate { .. }
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // Delegated TLD registries
+    // -----------------------------------------------------------------
+
+    /// Operator-signed domain record for a delegated TLD.
+    fn op_record(
+        operator: &NodeIdentity,
+        fqdn: &str,
+        owner_pk: &str,
+        manifest_hash: &str,
+        expires_at: Option<String>,
+    ) -> DomainRecord {
+        let (label, tld) = fqdn.split_once('.').unwrap();
+        let mut rec = DomainRecord {
+            domain: fqdn.into(),
+            tld: tld.into(),
+            label: label.into(),
+            owner_public_key: owner_pk.into(),
+            target_type: TargetType::Manifest,
+            manifest_hash: manifest_hash.into(),
+            service_id: None,
+            node_id: None,
+            status: DomainStatus::Active,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            expires_at,
+            renewal: None,
+            pricing: None,
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        rec.signature = Some(operator.sign(&rec.signable_bytes().unwrap()));
+        rec
+    }
+
+    /// Owner-signed one-page site: (manifest_bytes, manifest_hash, block_hash, block).
+    fn owner_site(owner: &NodeIdentity, fqdn: &str) -> (Vec<u8>, String, String, Vec<u8>) {
+        let block = format!("<html>delegated content of {fqdn}</html>").into_bytes();
+        let block_hash = federate_storage::hash_bytes(&block);
+        let mut manifest = Manifest {
+            domain: fqdn.into(),
+            version: 1,
+            entry: "index.html".into(),
+            files: BTreeMap::from([("index.html".to_string(), block_hash.clone())]),
+            owner_public_key: owner.node_id(),
+            created_at: "t".into(),
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        manifest.signature = Some(owner.sign(&manifest.signable_bytes().unwrap()));
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
+        (manifest_bytes, manifest_hash, block_hash, block)
+    }
+
+    /// Root-signed TLD record delegating `tld` to `operator`.
+    fn delegated_tld_record(
+        keys: &Keys,
+        operator: &NodeIdentity,
+        tld: &str,
+        registry_type: federate_naming::RegistryType,
+    ) -> federate_root::TldRecord {
+        let mut rec = signed_tld(keys, tld);
+        rec.status = TldStatus::Delegated;
+        rec.mode = TldMode::Delegated;
+        rec.owner_public_key = operator.node_id();
+        rec.operator_public_key = operator.node_id();
+        rec.registry_type = registry_type;
+        rec.signature = Some(keys.root.sign(&rec.signable_bytes().unwrap()));
+        rec
+    }
+
+    /// Signed zone containing one delegated TLD plus the official `.fed`.
+    fn zone_with_tld(keys: &Keys, tld_rec: federate_root::TldRecord) -> RootZone {
+        let mut tlds = BTreeMap::new();
+        tlds.insert("fed".to_string(), signed_tld(keys, "fed"));
+        tlds.insert(tld_rec.tld.clone(), tld_rec);
+        let mut zone = RootZone {
+            network: "federate".into(),
+            root_version: 1,
+            generated_at: "t".into(),
+            root_public_key: keys.root.node_id(),
+            tlds,
+            domains: BTreeMap::new(),
+            audit: vec![],
+            signature_algorithm: SIGNATURE_ALGORITHM.into(),
+            signature: None,
+        };
+        zone.signature = Some(keys.root.sign(&zone.signable_bytes().unwrap()));
+        zone
+    }
+
+    fn fresh_data_dir(dir: &Path, keys: &Keys, zone: &RootZone) -> PathBuf {
+        let data_dir = dir.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        RootCache::new(&data_dir).store(zone).unwrap();
+        std::fs::write(data_dir.join("trusted-root-key"), keys.root.node_id()).unwrap();
+        data_dir
+    }
+
+    /// delegated_manifest mode, end to end: the registry travels as a
+    /// content-addressed manifest pinned by the root-signed TLD record; the
+    /// domain resolves through the delegated path with HTTP dead. Uses a
+    /// non-seed TLD name, so nothing anywhere special-cases the demo TLD.
+    #[tokio::test]
+    async fn delegated_manifest_tld_resolves_end_to_end() {
+        let dir = tmp("dlg-manifest");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+
+        let (manifest_bytes, manifest_hash, block_hash, block) = owner_site(&owner, "eu.livraria");
+        let past = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        let registry = federate_registry::TldRegistry::signed(
+            &operator,
+            "livraria",
+            1,
+            "t",
+            BTreeMap::from([
+                (
+                    "eu.livraria".to_string(),
+                    op_record(
+                        &operator,
+                        "eu.livraria",
+                        &owner.node_id(),
+                        &manifest_hash,
+                        None,
+                    ),
+                ),
+                (
+                    "velho.livraria".to_string(),
+                    op_record(
+                        &operator,
+                        "velho.livraria",
+                        &owner.node_id(),
+                        &manifest_hash,
+                        Some(past),
+                    ),
+                ),
+            ]),
+        )
+        .unwrap();
+        let registry_bytes = serde_json::to_vec(&registry).unwrap();
+        let registry_hash = federate_storage::hash_bytes(&registry_bytes);
+
+        let mut tld_rec = delegated_tld_record(
+            &keys,
+            &operator,
+            "livraria",
+            federate_naming::RegistryType::DelegatedManifest,
+        );
+        tld_rec.registry_manifest_hash = Some(registry_hash.clone());
+        tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+        let zone = zone_with_tld(&keys, tld_rec);
+        let data_dir = fresh_data_dir(&dir, &keys, &zone);
+
+        // Registry manifest, site manifest, and block all served natively.
+        let provider = spawn_native(FullService {
+            manifests: std::collections::HashMap::from([
+                (registry_hash, registry_bytes),
+                (manifest_hash, manifest_bytes),
+            ]),
+            blocks: std::collections::HashMap::from([(block_hash, block.clone())]),
+            ..Default::default()
+        })
+        .await;
+
+        let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
+            .unwrap()
+            .with_native_providers(vec![provider.to_string()]);
+
+        let uri = federate_uri::FederateUri::parse("fed://eu.livraria").unwrap();
+        let t = Trace::default();
+        match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+            Resolved::Content { bytes, .. } => assert_eq!(bytes, block),
+            other => panic!("expected delegated content, got {other:?}"),
+        }
+        let log = t.events().join("\n");
+        assert!(
+            log.contains("registry for .livraria: content-addressed registry manifest"),
+            "delegated registry step traced:\n{log}"
+        );
+
+        // Unknown domain under the delegated TLD: normal domain-not-found.
+        assert!(matches!(
+            resolver.resolve("nao.livraria", "/").await.unwrap(),
+            Resolved::DomainNotFound { .. }
+        ));
+        // Expired delegated domain: fail closed even though the signature
+        // is valid.
+        match resolver.resolve("velho.livraria", "/").await.unwrap() {
+            Resolved::DomainUnavailable { status, .. } => assert_eq!(status, "expired"),
+            other => panic!("expired delegated domain must not resolve, got {other:?}"),
+        }
+    }
+
+    /// delegated_native mode: the registry itself arrives over the native
+    /// protocol (GetTldRegistry) from a provider listed in the root-signed
+    /// TLD record.
+    #[tokio::test]
+    async fn delegated_native_registry_resolves_end_to_end() {
+        let dir = tmp("dlg-native");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+
+        let (manifest_bytes, manifest_hash, block_hash, block) = owner_site(&owner, "eu.copo");
+        let registry = federate_registry::TldRegistry::signed(
+            &operator,
+            "copo",
+            1,
+            "t",
+            BTreeMap::from([(
+                "eu.copo".to_string(),
+                op_record(&operator, "eu.copo", &owner.node_id(), &manifest_hash, None),
+            )]),
+        )
+        .unwrap();
+
+        let provider = spawn_native(FullService {
+            manifests: std::collections::HashMap::from([(manifest_hash, manifest_bytes)]),
+            blocks: std::collections::HashMap::from([(block_hash, block.clone())]),
+            registries: std::collections::HashMap::from([(
+                "copo".to_string(),
+                serde_json::to_vec(&registry).unwrap(),
+            )]),
+            ..Default::default()
+        })
+        .await;
+
+        let mut tld_rec = delegated_tld_record(
+            &keys,
+            &operator,
+            "copo",
+            federate_naming::RegistryType::DelegatedNative,
+        );
+        tld_rec.registry_providers = vec![provider.to_string()];
+        tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+        let zone = zone_with_tld(&keys, tld_rec);
+        let data_dir = fresh_data_dir(&dir, &keys, &zone);
+
+        let resolver = Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None)
+            .unwrap()
+            .with_native_providers(vec![provider.to_string()]);
+
+        let uri = federate_uri::FederateUri::parse("fed://eu.copo").unwrap();
+        let t = Trace::default();
+        match resolver.resolve_uri_traced(&uri, &t).await.unwrap() {
+            Resolved::Content { bytes, .. } => assert_eq!(bytes, block),
+            other => panic!("expected delegated content, got {other:?}"),
+        }
+        let log = t.events().join("\n");
+        assert!(
+            log.contains("registry for .copo: fetched over NATIVE protocol"),
+            "registry must arrive natively:\n{log}"
+        );
+        // The live registry is now cached on disk for offline fallback.
+        assert!(data_dir.join("registries").join("copo.json").exists());
+    }
+
+    /// Registry providers all dead: the last verified cached registry keeps
+    /// delegated domains resolving; a tampered cache is discarded and the
+    /// outcome degrades to the structured unavailable answer.
+    #[tokio::test]
+    async fn delegated_native_offline_uses_verified_cache_rejects_tampered() {
+        let dir = tmp("dlg-offline");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+
+        let (_, manifest_hash, _, _) = owner_site(&owner, "eu.arquivo");
+        let registry = federate_registry::TldRegistry::signed(
+            &operator,
+            "arquivo",
+            3,
+            "t",
+            BTreeMap::from([(
+                "eu.arquivo".to_string(),
+                op_record(
+                    &operator,
+                    "eu.arquivo",
+                    &owner.node_id(),
+                    &manifest_hash,
+                    None,
+                ),
+            )]),
+        )
+        .unwrap();
+
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let mut tld_rec = delegated_tld_record(
+            &keys,
+            &operator,
+            "arquivo",
+            federate_naming::RegistryType::DelegatedNative,
+        );
+        tld_rec.registry_providers = vec![dead.to_string()];
+        tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+        let zone = zone_with_tld(&keys, tld_rec);
+        let data_dir = fresh_data_dir(&dir, &keys, &zone);
+
+        // Pre-seed the verified registry cache (as if fetched earlier).
+        let reg_dir = data_dir.join("registries");
+        std::fs::create_dir_all(&reg_dir).unwrap();
+        std::fs::write(
+            reg_dir.join("arquivo.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+
+        let resolver =
+            Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None).unwrap();
+
+        // Record layer resolves offline from the verified cached registry.
+        assert!(resolver.resolve_domain("eu.arquivo").await.is_ok());
+        let t = Trace::default();
+        let uri = federate_uri::FederateUri::parse("fed://nao.arquivo").unwrap();
+        assert!(matches!(
+            resolver.resolve_uri_traced(&uri, &t).await.unwrap(),
+            Resolved::DomainNotFound { .. }
+        ));
+        assert!(
+            t.events()
+                .join("\n")
+                .contains("using last verified cached registry"),
+            "offline fallback traced"
+        );
+
+        // Tamper the cached registry: it must be discarded, and with every
+        // provider dead the outcome is the structured unavailable answer.
+        std::fs::write(reg_dir.join("arquivo.json"), b"{\"not\": \"a registry\"}").unwrap();
+        match resolver.resolve("eu.arquivo", "/").await.unwrap() {
+            Resolved::DelegatedUnavailable { tld, .. } => assert_eq!(tld, "arquivo"),
+            other => panic!("tampered cache must not resolve, got {other:?}"),
+        }
+    }
+
+    /// A provider replaying an OLDER (correctly signed) registry cannot
+    /// rewind the namespace: the newer verified cached registry wins.
+    #[tokio::test]
+    async fn delegated_registry_rollback_rejected() {
+        let dir = tmp("dlg-rollback");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+        let (_, manifest_hash, _, _) = owner_site(&owner, "novo.selo");
+
+        let newer = federate_registry::TldRegistry::signed(
+            &operator,
+            "selo",
+            5,
+            "t",
+            BTreeMap::from([(
+                "novo.selo".to_string(),
+                op_record(
+                    &operator,
+                    "novo.selo",
+                    &owner.node_id(),
+                    &manifest_hash,
+                    None,
+                ),
+            )]),
+        )
+        .unwrap();
+        // Older registry (before novo.selo existed).
+        let older =
+            federate_registry::TldRegistry::signed(&operator, "selo", 3, "t", BTreeMap::new())
+                .unwrap();
+
+        let provider = spawn_native(FullService {
+            registries: std::collections::HashMap::from([(
+                "selo".to_string(),
+                serde_json::to_vec(&older).unwrap(),
+            )]),
+            ..Default::default()
+        })
+        .await;
+
+        let mut tld_rec = delegated_tld_record(
+            &keys,
+            &operator,
+            "selo",
+            federate_naming::RegistryType::DelegatedNative,
+        );
+        tld_rec.registry_providers = vec![provider.to_string()];
+        tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+        let zone = zone_with_tld(&keys, tld_rec);
+        let data_dir = fresh_data_dir(&dir, &keys, &zone);
+
+        // The newer registry was verified earlier (cached).
+        let reg_dir = data_dir.join("registries");
+        std::fs::create_dir_all(&reg_dir).unwrap();
+        std::fs::write(
+            reg_dir.join("selo.json"),
+            serde_json::to_vec(&newer).unwrap(),
+        )
+        .unwrap();
+
+        let resolver =
+            Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None).unwrap();
+        // novo.selo only exists in the newer registry: the replayed older
+        // one must not displace it.
+        assert!(
+            resolver.resolve_domain("novo.selo").await.is_ok(),
+            "replayed older registry must not rewind the namespace"
+        );
+    }
+
+    /// Forged registries fail closed: wrong claimed key, wrong signature.
+    /// Never a fallback, never content.
+    #[tokio::test]
+    async fn forged_delegated_registry_fails_closed() {
+        let dir = tmp("dlg-forged");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+        let attacker = NodeIdentity::load_or_create(&dir.join("atk")).unwrap();
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+        let (_, manifest_hash, _, _) = owner_site(&owner, "eu.forja");
+
+        // Signed by the attacker key end to end: valid document, wrong key.
+        let forged = federate_registry::TldRegistry::signed(
+            &attacker,
+            "forja",
+            9,
+            "t",
+            BTreeMap::from([(
+                "eu.forja".to_string(),
+                op_record(
+                    &attacker,
+                    "eu.forja",
+                    &owner.node_id(),
+                    &manifest_hash,
+                    None,
+                ),
+            )]),
+        )
+        .unwrap();
+
+        let provider = spawn_native(FullService {
+            registries: std::collections::HashMap::from([(
+                "forja".to_string(),
+                serde_json::to_vec(&forged).unwrap(),
+            )]),
+            ..Default::default()
+        })
+        .await;
+
+        let mut tld_rec = delegated_tld_record(
+            &keys,
+            &operator,
+            "forja",
+            federate_naming::RegistryType::DelegatedNative,
+        );
+        tld_rec.registry_providers = vec![provider.to_string()];
+        tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+        let zone = zone_with_tld(&keys, tld_rec);
+        let data_dir = fresh_data_dir(&dir, &keys, &zone);
+
+        let resolver =
+            Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None).unwrap();
+        match resolver.resolve("eu.forja", "/").await.unwrap() {
+            Resolved::SecurityFailure { layer, .. } => assert_eq!(layer, "tld-registry"),
+            other => panic!("forged registry must fail closed, got {other:?}"),
+        }
+    }
+
+    /// A correctly signed registry whose domain record is signed by the
+    /// wrong key fails closed at the record layer.
+    #[tokio::test]
+    async fn delegated_domain_record_wrong_signer_fails_closed() {
+        let dir = tmp("dlg-wrongsigner");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+        let attacker = NodeIdentity::load_or_create(&dir.join("atk")).unwrap();
+        let owner = NodeIdentity::load_or_create(&dir.join("owner")).unwrap();
+        let (_, manifest_hash, _, _) = owner_site(&owner, "eu.vitral");
+
+        // Registry properly operator-signed, but the record inside is
+        // attacker-signed.
+        let registry = federate_registry::TldRegistry::signed(
+            &operator,
+            "vitral",
+            1,
+            "t",
+            BTreeMap::from([(
+                "eu.vitral".to_string(),
+                op_record(
+                    &attacker,
+                    "eu.vitral",
+                    &owner.node_id(),
+                    &manifest_hash,
+                    None,
+                ),
+            )]),
+        )
+        .unwrap();
+
+        let provider = spawn_native(FullService {
+            registries: std::collections::HashMap::from([(
+                "vitral".to_string(),
+                serde_json::to_vec(&registry).unwrap(),
+            )]),
+            ..Default::default()
+        })
+        .await;
+
+        let mut tld_rec = delegated_tld_record(
+            &keys,
+            &operator,
+            "vitral",
+            federate_naming::RegistryType::DelegatedNative,
+        );
+        tld_rec.registry_providers = vec![provider.to_string()];
+        tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+        let zone = zone_with_tld(&keys, tld_rec);
+        let data_dir = fresh_data_dir(&dir, &keys, &zone);
+
+        let resolver =
+            Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None).unwrap();
+        match resolver.resolve("eu.vitral", "/").await.unwrap() {
+            Resolved::SecurityFailure { layer, .. } => assert_eq!(layer, "domain"),
+            other => panic!("wrong-signer record must fail closed, got {other:?}"),
+        }
+    }
+
+    /// Expired, revoked, and disabled delegated TLDs fail closed before any
+    /// registry fetch is even attempted.
+    #[tokio::test]
+    async fn delegated_tld_bad_status_or_expiry_fails_closed() {
+        let dir = tmp("dlg-status");
+        let keys = keys(&dir);
+        let operator = NodeIdentity::load_or_create(&dir.join("op")).unwrap();
+
+        for (name, status, expires_at, expected) in [
+            ("revogado", TldStatus::Revoked, None, "revoked"),
+            ("desligado", TldStatus::Disabled, None, "disabled"),
+            ("vencido", TldStatus::Expired, None, "expired"),
+            (
+                "lapso",
+                TldStatus::Delegated,
+                Some((chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339()),
+                "expired",
+            ),
+        ] {
+            let case_dir = dir.join(name);
+            std::fs::create_dir_all(&case_dir).unwrap();
+            let mut tld_rec = delegated_tld_record(
+                &keys,
+                &operator,
+                name,
+                federate_naming::RegistryType::DelegatedNative,
+            );
+            tld_rec.status = status;
+            tld_rec.expires_at = expires_at;
+            tld_rec.signature = Some(keys.root.sign(&tld_rec.signable_bytes().unwrap()));
+            let zone = zone_with_tld(&keys, tld_rec);
+            let data_dir = fresh_data_dir(&case_dir, &keys, &zone);
+
+            let resolver =
+                Resolver::new(NodeClient::new("http://127.0.0.1:1"), &data_dir, None).unwrap();
+            match resolver.resolve(&format!("eu.{name}"), "/").await.unwrap() {
+                Resolved::TldUnavailable { status, .. } => {
+                    assert_eq!(status, expected, ".{name} must fail closed as {expected}")
+                }
+                other => panic!(".{name} must fail closed, got {other:?}"),
+            }
+        }
     }
 }

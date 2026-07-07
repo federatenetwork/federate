@@ -39,6 +39,10 @@ pub struct TldRecord {
     /// For delegated_manifest registries: hash of the signed registry manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_manifest_hash: Option<String>,
+    /// For delegated_native registries: native Federate protocol providers
+    /// (`host:port`) that serve this TLD's signed registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registry_providers: Vec<String>,
     /// Hash of the policy document governing this TLD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_hash: Option<String>,
@@ -391,6 +395,7 @@ mod tests {
             registry_type: RegistryType::RootManaged,
             registry_endpoint: None,
             registry_manifest_hash: None,
+            registry_providers: Vec::new(),
             policy_hash: None,
             pricing: None,
             created_at: "t".into(),

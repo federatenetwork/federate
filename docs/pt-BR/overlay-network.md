@@ -11,7 +11,7 @@ físicos) fica como está; toda camada acima dele é da Federate.
 | Camada | Internet normal | Federate |
 |---|---|---|
 | Endereçamento | URLs + nomes DNS | URIs `fed://` ([federate-uri.md](federate-uri.md)) |
-| Autoridade de nomes | ICANN/registradores | zona raiz assinada + operadores de TLD ([tld-hierarchy.md](tld-hierarchy.md)) |
+| Autoridade de nomes | ICANN/registradores | zona raiz assinada + operadores de TLD delegados com registros assinados ([tld-hierarchy.md](tld-hierarchy.md)) |
 | Resolução de nomes | DNS | engine de resolução por zona assinada (`federate-resolution`) |
 | Protocolo de aplicação | HTTP(S) | protocolo Federate ([native-protocol.md](native-protocol.md)) |
 | Confiança | CAs + confiança de canal TLS | assinaturas por objeto + endereçamento por conteúdo ([signatures.md](signatures.md)) |
@@ -22,6 +22,17 @@ físicos) fica como está; toda camada acima dele é da Federate.
 
 As linhas de baixo são o ponto: a Federate reaproveita a entrega de pacotes
 e substitui tudo que as pessoas de fato tocam.
+
+## Nomes federados
+
+O próprio namespace é federado, não só a infraestrutura. A raiz assina quais
+TLDs existem e quem os opera; o operador de um TLD delegado assina o próprio
+registro e emite domínios sem pedir nada à raiz; cada dono de domínio assina
+o próprio manifest. Domínios root-managed e delegados resolvem pela mesma
+engine e pelas mesmas regras de verificação; só muda onde o registro vive. O
+poder da raiz sobre um TLD delegado é exatamente o registro de delegação:
+status, expiração, revogação. Ela não consegue forjar nem editar domínios
+dentro de uma delegação, e não precisa ser consultada para eles.
 
 ## Papéis no overlay
 

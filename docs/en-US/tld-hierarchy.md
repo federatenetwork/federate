@@ -68,21 +68,52 @@ Federate name therefore never shadows a real internet name, and the future
 local DNS resolver can safely forward everything non-Federate to normal DNS.
 See [blocked-tlds.md](blocked-tlds.md).
 
-## How delegated registries will resolve (future)
+## How delegated registries resolve
 
-Today only `root_managed` registries resolve (domains live in the signed root
-zone). For a delegated TLD, the resolver already:
+Delegated TLDs resolve for real. A delegated TLD publishes a **signed TLD
+registry**: a document listing every domain record the operator has issued,
+signed by the operator key named in the root-signed TLD record. The
+`registry_type` on the TLD record says how that registry is distributed:
 
-1. finds the TLD record in the root zone,
-2. confirms it is delegated and active,
-3. reads its `registry_type` / `registry_endpoint` / `registry_manifest_hash`,
-4. …and stops with a structured `DelegatedRegistryNotImplemented` error and a
-   clear error page.
+| Mode | Where the registry lives | Update model |
+|---|---|---|
+| `root_managed` | domain records sit in the signed root zone itself | root re-signs the zone (official TLDs) |
+| `delegated_manifest` | content-addressed registry manifest, pinned by `registry_manifest_hash` | operator publishes new bytes, root re-signs the TLD record with the new hash |
+| `delegated_native` | native Federate registry providers in `registry_providers` (`GetTldRegistry`) | operator updates freely; clients enforce version rollback protection |
+| `delegated_http` | operator HTTP endpoint in `registry_endpoint` (`/v1/tld-registry/:tld`) | compatibility twin of `delegated_native`, same signed document |
 
-In phase 6 the resolver will fetch domain records from the operator's registry
-(`delegated_http` endpoint, or a signed `delegated_manifest`), verify each
-record against the operator key authorized in the root-signed TLD record, and
-continue down the normal manifest/content path. The chain of trust never
-changes: root signs the TLD record; the operator key named there signs domain
-records. See [signatures.md](signatures.md) and
+Resolving `fed://eu.femboy` (`.femboy` is the neutral dev seed delegation):
+
+1. parse the URI; extract `eu.femboy` and `.femboy`,
+2. load and verify the signed root zone against the pinned root key,
+3. verify the `.femboy` TLD record (root-signed) and its status/expiry,
+4. fetch the `.femboy` registry through its mode and **verify the operator
+   signature** against the operator key in the TLD record,
+5. find `eu.femboy` in the registry and verify the record's operator
+   signature, status, and expiry,
+6. continue down the unchanged manifest/content path (owner-signed
+   manifest, hash-verified blocks).
+
+Failure behavior is asymmetric on purpose:
+
+- **signature invalid anywhere** (registry, record): fail closed, security
+  error, nothing served;
+- **registry unreachable**: fall back to the last verified cached registry;
+  with nothing cached, a clear "delegated registry unavailable" answer;
+- **TLD expired/revoked/disabled/suspended**: fail closed before the
+  registry is even fetched;
+- **domain simply absent**: the normal domain-not-found answer.
+
+Live registries (`delegated_native`/`delegated_http`) carry a monotonic
+`version`; clients reject a correctly signed but older registry than one
+they already verified, so neither the operator's host nor a mirror can
+rewind the namespace (same rollback rule as the root zone).
+
+This is why the root controls **TLD existence but not every domain
+forever**: once `.femboy` is delegated, the operator key issues and signs
+domains under it without asking the root; the root's only levers are the
+delegation record itself (status, expiry, revocation). Inspect and verify
+the whole chain with `federate delegated-registry inspect femboy` and
+`federate delegated-registry verify femboy`. See
+[signatures.md](signatures.md) and
 [tld-marketplace-roadmap.md](tld-marketplace-roadmap.md).

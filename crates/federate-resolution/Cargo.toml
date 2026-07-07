@@ -17,6 +17,7 @@ mime_guess = { workspace = true }
 tracing = { workspace = true }
 federate-directory = { workspace = true }
 federate-cdn = { workspace = true }
+federate-registry = { workspace = true }
 federate-uri = { workspace = true }
 federate-identity = { workspace = true }
 federate-protocol = { workspace = true }

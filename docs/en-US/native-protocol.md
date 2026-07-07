@@ -33,7 +33,7 @@ client                          node
 - `node_id` is the peer's public key (hex): identity, not authority. What a
   node may claim is still bounded by the signatures on the data itself.
 - capabilities tell the client which requests are worth making
-  (`root`, `manifests`, `blocks`, `providers`)
+  (`root`, `manifests`, `blocks`, `providers`, `tld-registries`)
 
 ## Requests and responses (v0)
 
@@ -46,6 +46,18 @@ client                          node
 | `GetStatus` | `Status { roles, region, root_version, ... }` | diagnostics |
 | anything | `Error { code, detail }` | `unsupported`, `not-found`, `bad-request`, `unavailable` |
 
+Added in **v1** (delegated TLD registries; sent only on sessions negotiated
+at v1 or newer):
+
+| Request | Response | Notes |
+|---|---|---|
+| `GetTldRegistry { tld }` | `TldRegistry { tld, registry_json }` | receiver MUST verify the operator signature against the operator key in the root-signed TLD record |
+| `GetDomainRecord { fqdn }` | `DomainRecord { fqdn, record_json }` | one operator-signed record; proves issuance, not freshness (only the full registry carries the rollback version) |
+
+Nodes that answer these advertise the `tld-registries` capability. A v1
+client on a v0 session sticks to the v0 message set; version negotiation
+already handles the rest.
+
 Planned for later versions: peer discovery exchange, signed handshakes
 (proof of key possession), capability-scoped rate limits, push/subscribe for
 zone updates.
@@ -55,7 +67,8 @@ zone updates.
 - one message = 4-byte big-endian length prefix + JSON body
 - frame cap: 68 MiB (blocks are capped at 64 MiB; envelope needs headroom)
 - JSON now, deliberately: trivial to debug, portable everywhere. A binary
-  encoding can arrive as protocol version 1 through the same negotiation, so
+  encoding can arrive as a later protocol version through the same
+  negotiation (v1 added the delegated registry messages this way), so
   choosing JSON today costs nothing tomorrow.
 
 ## Transport
@@ -90,6 +103,13 @@ Root zones and manifests:
 2. **native providers** (`GetRoot` / `GetManifest`), in configured order
 3. **HTTP compatibility endpoint** of the bootstrap node, last
 
+Delegated TLD registries (v1): `delegated_manifest` registries travel as
+content-addressed manifests through the exact path above; live registries
+are fetched with `GetTldRegistry` from the TLD's own `registry_providers`
+first, then from its HTTP `registry_endpoint`, operator-signature verified
+either way, with per-TLD offline caching and version rollback protection
+(see [tld-hierarchy.md](tld-hierarchy.md)).
+
 Content blocks:
 
 1. **local cache** (hash re-verified on read)
@@ -120,8 +140,9 @@ byte is verified regardless of who advertised the provider.
 ## Serving it
 
 `federate-server` (Node 1) and `federate-noded` both listen natively
-(default port `4077`) and answer `GetRoot`, `GetManifest`, `GetBlock`, and
-`GetStatus` from the same verified stores their HTTP routes use. The root
+(default port `4077`) and answer `GetRoot`, `GetManifest`, `GetBlock`,
+`GetTldRegistry`, `GetDomainRecord`, and `GetStatus` from the same verified
+stores their HTTP routes use. The root
 authority is a Federate node first; HTTP is its compatibility door. There is
 one resolution engine and one set of stores; native and compatibility
 surfaces are two doors into the same room.

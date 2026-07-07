@@ -247,6 +247,7 @@ impl federate_transport::NodeService for NativeService {
         let mut caps = vec![
             federate_protocol::Capability::Root,
             federate_protocol::Capability::Manifests,
+            federate_protocol::Capability::TldRegistries,
         ];
         if self.cache.is_some() {
             caps.push(federate_protocol::Capability::Blocks);
@@ -299,6 +300,27 @@ impl federate_transport::NodeService for NativeService {
                 }
                 err(ErrorCode::NotFound, "block not held by this node")
             }
+            // v1: relay delegated TLD registries. The registry served here
+            // already passed operator-signature verification locally, and
+            // the receiver re-verifies it anyway.
+            Message::GetTldRegistry { tld } => match self.resolver.tld_registry_by_name(&tld).await
+            {
+                Ok(registry) => match serde_json::to_vec(&registry) {
+                    Ok(registry_json) => Message::TldRegistry { tld, registry_json },
+                    Err(e) => err(ErrorCode::Unavailable, &e.to_string()),
+                },
+                Err(e) => err(
+                    ErrorCode::NotFound,
+                    &format!("no verified registry for .{tld}: {e}"),
+                ),
+            },
+            Message::GetDomainRecord { fqdn } => match self.resolver.resolve_domain(&fqdn).await {
+                Ok(record) => match serde_json::to_vec(&record) {
+                    Ok(record_json) => Message::DomainRecord { fqdn, record_json },
+                    Err(e) => err(ErrorCode::Unavailable, &e.to_string()),
+                },
+                Err(e) => err(ErrorCode::NotFound, &format!("{fqdn}: {e}")),
+            },
             Message::GetStatus => Message::Status {
                 node_id: self.runtime.node_id(),
                 roles: self
@@ -315,7 +337,7 @@ impl federate_transport::NodeService for NativeService {
             },
             _ => err(
                 ErrorCode::Unsupported,
-                "this node answers GetRoot, GetManifest, GetBlock, and GetStatus",
+                "this node answers GetRoot, GetManifest, GetBlock, GetTldRegistry, GetDomainRecord, and GetStatus",
             ),
         }
     }

@@ -19,19 +19,33 @@
 //!   exactly like the HTTP path. The protocol moves bytes, signatures decide.
 //!
 //! Request/response pairs (v0):
-//!   Hello        -> Welcome            handshake + version/capabilities
-//!   GetRoot      -> Root               signed root zone (JSON bytes)
-//!   GetManifest  -> Manifest           content-addressed manifest bytes
-//!   GetBlock     -> Block              content-addressed block bytes
-//!   GetProviders -> Providers          who serves a block (directory-backed)
-//!   GetStatus    -> Status             role/health/version info
-//!   anything     -> Error              structured failure
+//!   Hello           -> Welcome         handshake + version/capabilities
+//!   GetRoot         -> Root            signed root zone (JSON bytes)
+//!   GetManifest     -> Manifest        content-addressed manifest bytes
+//!   GetBlock        -> Block           content-addressed block bytes
+//!   GetProviders    -> Providers       who serves a block (directory-backed)
+//!   GetStatus       -> Status          role/health/version info
+//!   anything        -> Error           structured failure
+//!
+//! Added in v1 (delegated TLD registries):
+//!   GetTldRegistry  -> TldRegistry     operator-signed registry of a
+//!                                      delegated TLD (JSON bytes; receiver
+//!                                      verifies the operator signature)
+//!   GetDomainRecord -> DomainRecord    one operator-signed domain record
+//!
+//! A v1 client only sends v1 messages on sessions negotiated at >= 1; on a
+//! v0 session it sticks to the v0 set.
 
 use federate_core::{FederateError, Result};
 use serde::{Deserialize, Serialize};
 
 /// Protocol versions this implementation can speak, newest first.
-pub const SUPPORTED_VERSIONS: &[u16] = &[0];
+/// v1 = v0 + delegated TLD registry messages.
+pub const SUPPORTED_VERSIONS: &[u16] = &[1, 0];
+
+/// First protocol version that carries the delegated TLD registry messages
+/// (`GetTldRegistry`, `GetDomainRecord`).
+pub const VERSION_DELEGATED_REGISTRIES: u16 = 1;
 
 /// Hard cap on one framed message. Blocks are capped at 64 MiB by
 /// `federate-client`; the frame cap leaves room for envelope overhead.
@@ -53,6 +67,8 @@ pub enum Capability {
     Manifests,
     Blocks,
     Providers,
+    /// Serves delegated TLD registries (v1: GetTldRegistry, GetDomainRecord).
+    TldRegistries,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +124,28 @@ pub enum Message {
     Providers {
         hash: String,
         nodes_json: Vec<u8>,
+    },
+    /// v1. Ask for the operator-signed registry of a delegated TLD.
+    GetTldRegistry {
+        tld: String,
+    },
+    /// v1. The registry as canonical JSON bytes. The receiver MUST verify
+    /// the operator signature against the operator key in the root-signed
+    /// TLD record before using any record inside.
+    TldRegistry {
+        tld: String,
+        registry_json: Vec<u8>,
+    },
+    /// v1. Ask for one operator-signed domain record (lightweight clients).
+    GetDomainRecord {
+        fqdn: String,
+    },
+    /// v1. One domain record as JSON bytes. The receiver MUST verify the
+    /// operator signature; a standalone record proves issuance, but only the
+    /// full signed registry proves freshness (version rollback protection).
+    DomainRecord {
+        fqdn: String,
+        record_json: Vec<u8>,
     },
     GetStatus,
     Status {
@@ -205,6 +243,20 @@ mod tests {
                 code: ErrorCode::NotFound,
                 detail: "no such block".into(),
             },
+            Message::GetTldRegistry {
+                tld: "livros".into(),
+            },
+            Message::TldRegistry {
+                tld: "livros".into(),
+                registry_json: br#"{"tld":"livros"}"#.to_vec(),
+            },
+            Message::GetDomainRecord {
+                fqdn: "eu.livros".into(),
+            },
+            Message::DomainRecord {
+                fqdn: "eu.livros".into(),
+                record_json: br#"{"domain":"eu.livros"}"#.to_vec(),
+            },
         ];
         for msg in msgs {
             let frame = encode(&msg).unwrap();
@@ -231,6 +283,12 @@ mod tests {
         assert_eq!(negotiate(&[2, 1, 0], &[1, 0]), Some(1));
         assert_eq!(negotiate(&[0], &[7]), None);
         assert_eq!(negotiate(&[], &[0]), None);
+        // current implementation vs a v0-only peer: falls back to v0
+        assert_eq!(negotiate(SUPPORTED_VERSIONS, &[0]), Some(0));
+        assert_eq!(
+            negotiate(SUPPORTED_VERSIONS, SUPPORTED_VERSIONS),
+            Some(VERSION_DELEGATED_REGISTRIES)
+        );
     }
 
     #[test]

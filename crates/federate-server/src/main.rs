@@ -65,6 +65,9 @@ struct Store {
     manifests: HashMap<String, Vec<u8>>,
     /// block hash -> bytes
     blocks: HashMap<String, Vec<u8>>,
+    /// tld -> (signed registry JSON bytes, parsed registry) for the seed
+    /// delegated TLDs this node distributes.
+    registries: HashMap<String, (Vec<u8>, federate_registry::TldRegistry)>,
     node_id: String,
     started_at: String,
     /// TCP port of this node's native Federate protocol listener,
@@ -90,6 +93,7 @@ impl federate_transport::NodeService for NativeService {
             federate_protocol::Capability::Root,
             federate_protocol::Capability::Manifests,
             federate_protocol::Capability::Blocks,
+            federate_protocol::Capability::TldRegistries,
         ]
     }
 
@@ -121,6 +125,25 @@ impl federate_transport::NodeService for NativeService {
                 },
                 None => not_found("no such block"),
             },
+            // v1: delegated TLD registries. This node distributes signed
+            // registries; receivers verify the operator signature.
+            Message::GetTldRegistry { tld } => match self.0.registries.get(&tld) {
+                Some((bytes, _)) => Message::TldRegistry {
+                    tld,
+                    registry_json: bytes.clone(),
+                },
+                None => not_found("no delegated registry for this TLD here"),
+            },
+            Message::GetDomainRecord { fqdn } => match self.0.lookup_domain(&fqdn) {
+                Some(record) => match serde_json::to_vec(record) {
+                    Ok(record_json) => Message::DomainRecord { fqdn, record_json },
+                    Err(e) => Message::Error {
+                        code: ErrorCode::Unavailable,
+                        detail: e.to_string(),
+                    },
+                },
+                None => not_found("no such domain record here"),
+            },
             Message::GetStatus => Message::Status {
                 node_id: self.0.node_id.clone(),
                 roles: vec!["root-authority".into(), "origin".into()],
@@ -133,6 +156,18 @@ impl federate_transport::NodeService for NativeService {
                 detail: "this node answers GetRoot, GetManifest, GetBlock, and GetStatus".into(),
             },
         }
+    }
+}
+
+impl Store {
+    /// A domain record from the root zone or any seed delegated registry.
+    fn lookup_domain(&self, fqdn: &str) -> Option<&DomainRecord> {
+        if let Some(rec) = self.root.lookup(fqdn) {
+            return Some(rec);
+        }
+        self.registries
+            .values()
+            .find_map(|(_, registry)| registry.lookup(fqdn))
     }
 }
 
@@ -193,6 +228,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
             registry_type: RegistryType::RootManaged,
             registry_endpoint: None,
             registry_manifest_hash: None,
+            registry_providers: Vec::new(),
             policy_hash: None,
             pricing: None,
             created_at: now.clone(),
@@ -206,43 +242,27 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         tlds.insert(name, rec);
     }
 
-    // Example delegated TLD (seed data; marketplace/payment arrive later).
-    // Demonstrates root → operator delegation; delegated resolution itself
-    // is phase 6, so resolving under it returns DelegatedRegistryNotImplemented.
-    let femboy_operator = NodeIdentity::load_or_create(&args.data_dir.join("op-femboy"))?;
-    let femboy = blocklists.validate_new_tld("femboy", false)?;
-    tlds.insert(
-        femboy.clone(),
-        sign_tld(TldRecord {
-            tld: femboy.clone(),
-            status: TldStatus::Delegated,
-            mode: TldMode::Delegated,
-            owner_public_key: femboy_operator.node_id(),
-            operator_public_key: femboy_operator.node_id(),
-            operator_name: "example delegated operator".into(),
-            registry_type: RegistryType::DelegatedHttp,
-            registry_endpoint: Some("https://registry.femboy.example (placeholder)".into()),
-            registry_manifest_hash: None,
-            policy_hash: None,
-            pricing: Some(serde_json::json!({ "note": "pricing metadata placeholder; no payments in this phase" })),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            expires_at: Some("2027-07-03T00:00:00Z".into()),
-            notes: Some("Seed example of a delegated TLD. Domains under it are issued by the operator, not by Federate.".into()),
-            signature_algorithm: SIGNATURE_ALGORITHM.into(),
-            signature: None,
-        })?,
-    );
-    audit_push(
-        "tld.delegate",
-        ".femboy",
-        Some("seed example delegation".into()),
-    );
+    // Seed delegated TLDs (dev/demo data; marketplace/payments arrive
+    // later). Each delegated TLD has its OWN operator key: the root signs
+    // the delegation, the operator signs the registry and its domain
+    // records. Records are inserted after sites are scanned, because the
+    // TLD record pins the hash of the operator-signed registry manifest.
+    // `.femboy` is a neutral technical test TLD.
+    const SEED_DELEGATED_TLDS: &[&str] = &["femboy"];
+    let mut delegated_ops: BTreeMap<String, NodeIdentity> = BTreeMap::new();
+    for seed in SEED_DELEGATED_TLDS {
+        let name = blocklists.validate_new_tld(seed, false)?;
+        let operator = NodeIdentity::load_or_create(&args.data_dir.join(format!("op-{name}")))?;
+        delegated_ops.insert(name, operator);
+    }
 
-    // --- Sites: manifests (owner-signed) + domain records (operator-signed) ---
+    // --- Sites: manifests (owner-signed) + domain records (operator-signed).
+    // Official-TLD records go into the root zone; delegated-TLD records go
+    // into their TLD's operator-signed registry. ---
     let mut manifests = HashMap::new();
     let mut blocks = HashMap::new();
     let mut domains = BTreeMap::new();
+    let mut delegated_domains: BTreeMap<String, BTreeMap<String, DomainRecord>> = BTreeMap::new();
 
     for entry in std::fs::read_dir(&args.sites_dir)? {
         let entry = entry?;
@@ -258,7 +278,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
             tracing::warn!("skipping sites/{dir_name}: invalid TLD");
             continue;
         };
-        if !tlds.contains_key(&tld) {
+        if !tlds.contains_key(&tld) && !delegated_ops.contains_key(&tld) {
             tracing::warn!("skipping sites/{dir_name}: TLD .{tld} not in root registry");
             continue;
         }
@@ -303,7 +323,8 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         let manifest_hash = federate_storage::hash_bytes(&bytes);
         manifests.insert(manifest_hash.clone(), bytes);
 
-        // Domain record signed by the official TLD operator key.
+        // Domain record signed by the TLD's operator key: the official
+        // operator for root-managed TLDs, the delegated operator otherwise.
         let mut record = DomainRecord {
             domain: domain.clone(),
             tld: tld.clone(),
@@ -322,10 +343,82 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
             signature_algorithm: SIGNATURE_ALGORITHM.into(),
             signature: None,
         };
-        record.signature = Some(operator_key.sign(&record.signable_bytes()?));
-        audit_push("domain.register", &domain, None);
-        domains.insert(domain.clone(), record);
-        tracing::info!("published {domain}");
+        match delegated_ops.get(&tld) {
+            Some(operator) => {
+                record.signature = Some(operator.sign(&record.signable_bytes()?));
+                delegated_domains
+                    .entry(tld.clone())
+                    .or_default()
+                    .insert(domain.clone(), record);
+                tracing::info!("published {domain} (delegated registry .{tld})");
+            }
+            None => {
+                record.signature = Some(operator_key.sign(&record.signable_bytes()?));
+                audit_push("domain.register", &domain, None);
+                domains.insert(domain.clone(), record);
+                tracing::info!("published {domain}");
+            }
+        }
+    }
+
+    // --- Delegated TLDs: operator-signed registry manifests + root-signed
+    // TLD records pinning them ---
+    // The registry travels as a content-addressed manifest
+    // (delegated_manifest mode): the root-signed TLD record pins its hash,
+    // clients fetch it like any manifest and verify the operator signature.
+    let registry_version = chrono::Utc::now().timestamp().max(0) as u64;
+    let mut registries: HashMap<String, (Vec<u8>, federate_registry::TldRegistry)> = HashMap::new();
+    for (tld, operator) in &delegated_ops {
+        let registry = federate_registry::TldRegistry::signed(
+            operator,
+            tld,
+            registry_version,
+            &now,
+            delegated_domains.remove(tld).unwrap_or_default(),
+        )
+        .map_err(|e| format!("cannot sign .{tld} registry: {e}"))?;
+        let registry_bytes = serde_json::to_vec(&registry)?;
+        let registry_hash = federate_storage::hash_bytes(&registry_bytes);
+        manifests.insert(registry_hash.clone(), registry_bytes.clone());
+
+        tlds.insert(
+            tld.clone(),
+            sign_tld(TldRecord {
+                tld: tld.clone(),
+                status: TldStatus::Delegated,
+                mode: TldMode::Delegated,
+                owner_public_key: operator.node_id(),
+                operator_public_key: operator.node_id(),
+                operator_name: format!("delegated operator of .{tld} (dev seed)"),
+                registry_type: RegistryType::DelegatedManifest,
+                registry_endpoint: None,
+                registry_manifest_hash: Some(registry_hash),
+                registry_providers: Vec::new(),
+                policy_hash: None,
+                pricing: Some(serde_json::json!({
+                    "note": "pricing metadata placeholder; no payments in this phase"
+                })),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                expires_at: Some("2027-07-03T00:00:00Z".into()),
+                notes: Some(
+                    "Dev seed of a delegated TLD: the operator key signs the registry and \
+                     its domain records; the root only signs this delegation."
+                        .into(),
+                ),
+                signature_algorithm: SIGNATURE_ALGORITHM.into(),
+                signature: None,
+            })?,
+        );
+        audit_push(
+            "tld.delegate",
+            &format!(".{tld}"),
+            Some(format!(
+                "seed delegation; registry v{registry_version} with {} domain(s)",
+                registry.domains.len()
+            )),
+        );
+        registries.insert(tld.clone(), (registry_bytes, registry));
     }
 
     // --- Signed root zone ---
@@ -358,6 +451,7 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         blocklists,
         manifests,
         blocks,
+        registries,
         node_id: node_identity.node_id(),
         started_at: now,
         native_port: args.native_listen.port(),
@@ -399,6 +493,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/reserved", get(reserved))
         .route("/v1/domains", get(domains_by_tld))
         .route("/v1/domain/:fqdn", get(domain_record))
+        .route("/v1/tld-registry/:tld", get(tld_registry))
         .route("/v1/manifest/:hash", get(manifest))
         .route("/v1/block/:hash", get(block))
         // Future hooks (documented, intentionally stubbed):
@@ -625,10 +720,22 @@ async fn domain_record(
     State(s): State<Arc<Store>>,
     AxPath(fqdn): AxPath<String>,
 ) -> Result<Json<DomainRecord>, StatusCode> {
-    s.root
-        .lookup(&fqdn.to_ascii_lowercase())
+    s.lookup_domain(&fqdn.to_ascii_lowercase())
         .cloned()
         .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// The operator-signed registry of a delegated TLD, as the exact signed
+/// bytes (JSON). HTTP compatibility twin of the native `GetTldRegistry`.
+async fn tld_registry(
+    State(s): State<Arc<Store>>,
+    AxPath(tld): AxPath<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let tld = tld.trim_start_matches('.').to_ascii_lowercase();
+    s.registries
+        .get(&tld)
+        .map(|(bytes, _)| ([(header::CONTENT_TYPE, "application/json")], bytes.clone()))
         .ok_or(StatusCode::NOT_FOUND)
 }
 
