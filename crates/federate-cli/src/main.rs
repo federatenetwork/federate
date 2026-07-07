@@ -887,7 +887,13 @@ async fn main() {
         Cmd::Handler { cmd } => handler_cmd(cmd),
         Cmd::Open { domain } => {
             // Accepts fed://... and bare domains; opens the browser through
-            // the HTTP compatibility gateway (portless URL).
+            // the HTTP compatibility gateway (portless URL). This runs as a
+            // registered URL-scheme handler, so the argument is attacker-shaped
+            // by definition: reject anything flag-like before it can be read as
+            // an option, then rebuild the URL only from validated URI parts.
+            if domain.starts_with('-') {
+                die("open expects a fed:// address or bare domain, not a flag");
+            }
             let uri = parse_target(&domain);
             let url = format!(
                 "http://{}{}",
@@ -895,12 +901,17 @@ async fn main() {
                 if uri.path == "/" { "" } else { &uri.path }
             );
             println!("opening {url}");
+            // Every launcher below receives the URL as a single argv element,
+            // never a shell string, so URL contents cannot inject arguments.
             #[cfg(target_os = "macos")]
             let cmd = ("open", vec![url.clone()]);
             #[cfg(target_os = "linux")]
             let cmd = ("xdg-open", vec![url.clone()]);
             #[cfg(target_os = "windows")]
-            let cmd = ("cmd", vec!["/C".to_string(), format!("start {url}")]);
+            let cmd = (
+                "rundll32",
+                vec!["url.dll,FileProtocolHandler".to_string(), url.clone()],
+            );
             if let Err(e) = std::process::Command::new(cmd.0).args(&cmd.1).spawn() {
                 eprintln!("could not open browser: {e}; open {url} manually");
             }
@@ -2393,7 +2404,7 @@ fn handler_install() {
         &desktop,
         format!(
             "[Desktop Entry]\nType=Application\nName=Federate URL Handler\n\
-             Exec={} open %u\nMimeType=x-scheme-handler/fed;\nNoDisplay=true\nTerminal=false\n",
+             Exec={} open -- %u\nMimeType=x-scheme-handler/fed;\nNoDisplay=true\nTerminal=false\n",
             exe.display()
         ),
     )
@@ -2455,7 +2466,9 @@ fn handler_status() {
 fn handler_install() {
     let exe = std::env::current_exe()
         .unwrap_or_else(|e| die(&format!("cannot locate federate.exe: {e}")));
-    let command = format!("\"{}\" open \"%1\"", exe.display());
+    // `--` stops flag parsing: a crafted fed:// URL substituted into %1
+    // is always taken as the positional domain, never smuggled argv.
+    let command = format!("\"{}\" open -- \"%1\"", exe.display());
     let run = |args: &[&str]| {
         let ok = std::process::Command::new("reg")
             .args(args)
