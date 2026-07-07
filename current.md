@@ -25,7 +25,7 @@ The repo is a working single-operator overlay network with a genuinely native pr
 - **Registry/domain lifecycle**: statuses fully enforced at resolution AND changeable at runtime via signed mutations (suspend/reinstate/revoke, TLD status changes, delegation). Still missing: application/approval workflow and payments; `tld apply` and `/v1/applications` remain stubs (`tld approve` now points at `tld delegate`).
 - **CDN/storage**: LRU cache, fetch-on-miss, signed announcements, provider ranking (region + latency) all real; but no replication targets, no pinning, and directory-based provider discovery for manifests/registries uses only configured defaults, not per-hash announcements.
 - **Search**: real crawler through the verifying resolver, opt-out honored, TF ranking, no ads/tracking/AI-training. But the index is in-memory only, rebuilds every 10 minutes from scratch, ranking is naive, no UI site is wired to `fed.busca` in the repo, and only root-zone (official TLD) domains are crawled.
-- **Deployment**: complete docs (Hetzner-style VPS, hardened systemd units, Caddy host-routing, ufw incl. 4077/tcp, port-53 freeing, key + registry backup, rollback, explicit root init/seed steps), Dockerfile, launchd plist. Never executed against a real server.
+- **Deployment**: EXECUTED for real on 2026-07-07: Hetzner VPS, Docker-based stack (multi-binary image, compose, Traefik catch-all, hairpin-DNAT entrypoint for same-bridge health checks), documented with the exact commands in deployment-vps.md. The systemd/Caddy path remains documented for dedicated boxes but is not what runs today. Still missing: TLS/domain for the compat door.
 - **Protocol**: `GetProviders`/`Providers` messages are defined and documented, served by nobody, used by nobody.
 
 ## What is only stubbed / docs only
@@ -177,14 +177,14 @@ cargo build --release        ok
 | payments/transactions | | | x | | placeholder JSON fields |
 | native browser | | | | x | |
 | non-HTML runtime | | | | x | |
-| public deployment | | | | x | docs/units refreshed (4077, native-listen, registry backups); never executed |
+| public deployment | x | | | | LIVE: Node 1 + gateway + DNS on a Hetzner VPS (Docker, behind existing Traefik), externally verified incl. native fetch; daily registry backups |
 
 ## Biggest gaps (top 8)
 
 Former gaps 1 (runtime mutation) and 2 (official-TLD publishing path) are DONE: persistent registry, signed mutation API with nonce/challenge, package ingest, publishing CLI, all tested and live-verified. Remaining:
 
 1. **Key rotation/revocation**: a single static root key and operator keys forever; a leaked key is game over. State: docs-only. Next: cross-signed transition records for root and operators, honored by resolvers. **Large.**
-2. **No public deployment**: nothing validated outside localhost. Deploy docs/units were refreshed (4077/tcp in ufw, `--native-listen` in the unit, registry backup guidance) but never executed. Next: one real VPS deploy following the doc. **Small-medium.**
+2. **Public deployment: DONE for one node.** Node 1 runs live on a Hetzner VPS at 195.201.171.223 (Docker containers behind the box's existing Traefik: native 4077 public, DNS on the public IP:53, gateway behind a priority-1 catch-all on port 80), externally verified: native handshake, full pinned-key chain fetch of the runtime-published home.fed, port-80 browser door, upstream DNS forwarding. Registry backed up daily via cron. Remaining: a domain (federate.network) + TLS for the compat door, and a second vantage point for DNS testing (some access networks intercept port 53). **Done / small follow-ups.**
 3. **Replication/pinning**: content survives only where cached; if the origin dies, uncached content dies. State: fetch-on-miss CDN only. Next: pinning sets + replication targets per manifest, using existing announcements. **Medium.**
 4. **Directory/discovery still HTTP + single point**: one directory on Node 1; native plane absent; `GetProviders` unused. Next: serve provider queries natively and allow multiple directories. **Medium.**
 5. **Binary-level integration tests**: 7 binaries untested; regressions in main.rs wiring are only caught manually. Next: a spawn-binaries e2e test (server + noded + CLI publish + fetch) in CI. **Medium.**

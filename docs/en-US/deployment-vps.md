@@ -350,6 +350,104 @@ re-register every ~60s.
 `journalctl -u federate-server -f` (also `-u federate-dnsd`,
 `-u federate-gatewayd`). Verbosity: `Environment=RUST_LOG=debug` in the unit.
 
+## Shared VPS deployment (Docker + existing reverse proxy)
+
+This is how the FIRST real deployment of Node 1 was executed (2026-07-07,
+Hetzner VPS at 195.201.171.223): a shared box where ports 80/443 belong to
+an existing Traefik, ufw is active, root/sudo was not available, and a
+dozen other services must keep working. Everything runs as Docker
+containers under a normal user in the `docker` group; docker-published
+ports bypass ufw, so no firewall edits were needed for 53/4077.
+
+The pieces live in `deploy/docker/`: `Dockerfile` (all four binaries +
+seeds + blocklists), `docker-compose.yml`, `traefik-federate-catchall.yml`,
+`entrypoint.sh`.
+
+Layout on the box: `~/federate/src` (source), `~/federate/data/{node1,gatewayd,dnsd}`
+(state; keys and registry.redb live in node1), `~/federate/backups`.
+
+```sh
+# 1. build the image (on the box)
+cd ~/federate/src
+docker build -f deploy/docker/Dockerfile -t federate:latest .
+
+# 2. explicit registry bootstrap (one-shot containers, server not running)
+docker run --rm --user 1001:1001 -e HOME=/tmp \
+  -v $HOME/federate/data/node1:/var/lib/federate/data \
+  federate:latest federate root init --data-dir /var/lib/federate/data
+docker run --rm --user 1001:1001 -e HOME=/tmp \
+  -v $HOME/federate/data/node1:/var/lib/federate/data \
+  federate:latest federate root seed \
+  --file /var/lib/federate/seeds/official-tlds.toml --data-dir /var/lib/federate/data
+
+# 3. configure and start the stack
+cp ~/federate/src/deploy/docker/docker-compose.yml ~/federate/
+cat > ~/federate/.env <<ENV
+PUBLIC_IP=195.201.171.223
+REGION=de-fsn
+FEDERATE_UID=1001
+FEDERATE_GID=1001
+FEDERATE_DATA=/home/c3b/federate/data
+DNS_UPSTREAM=1.1.1.1:53
+ROOT_KEY=<hex printed by root init>
+ENV
+chmod 600 ~/federate/.env
+cd ~/federate && docker compose up -d
+
+# 4. publish the demo site through the ingest API
+docker run --rm --user 1001:1001 -e HOME=/tmp --network federate_federate \
+  -v $HOME/federate/cli:/keys federate:latest \
+  federate publish package /var/lib/federate/sites/home-fed \
+  --domain home.fed --key-dir /keys/owner --bootstrap http://federate-server:9600
+
+# 5. browser door: lowest-priority catch-all on the existing Traefik
+docker run --rm -v /opt/traefik/dynamic:/dyn \
+  -v $HOME/federate/src/deploy/docker:/srcd federate:latest \
+  cp /srcd/traefik-federate-catchall.yml /dyn/90-federate-catchall.yml
+```
+
+Port map: Node 1 HTTP on 127.0.0.1:9600 (loopback only), native protocol
+0.0.0.0:4077 (public), gateway 127.0.0.1:8095 (Traefik catch-all routes
+every unclaimed Host there, priority 1), DNS on PUBLIC_IP:53 udp+tcp
+(binding the specific public IP leaves systemd-resolved on 127.0.0.53
+untouched), health endpoints on PUBLIC_IP:8081/8053.
+
+One real-world gap this deploy surfaced: Docker excludes same-bridge
+traffic from published-port DNAT, so Node 1's health probes to the sibling
+nodes' public health endpoints (the only host the registration SSRF guard
+accepts) timed out and the nodes decayed to offline, which empties DNS
+answers. Fix shipped in `entrypoint.sh` + compose: the server container
+gets NET_ADMIN, installs two DNAT rules redirecting exactly those probe
+destinations to the siblings' static container IPs (172.30.77.11/12), then
+drops privileges to RUN_AS. Nothing on the host changes.
+
+Backups: `~/federate/backup.sh` (installed in the user crontab, daily at
+04:20) runs `federate registry backup` into `~/federate/backups/` plus a
+keys+content tarball, keeping the last 14 of each. Private keys are 0600
+files in the data volume; they are never inside the image or the database.
+
+Verification actually run from an external machine:
+
+```sh
+dig @195.201.171.223 home.fed          # -> 195.201.171.223 (see caveat)
+dig @195.201.171.223 google.com        # -> upstream-forwarded answer
+curl -H "Host: home.fed" http://195.201.171.223/   # -> the home.fed page via Traefik
+federate node ping --addr 195.201.171.223:4077     # -> native handshake, v1, root-authority
+federate fetch fed://home.fed/ --provider 195.201.171.223:4077 \
+  --root-key <root key hex>            # -> full chain verified, 2557 bytes
+```
+
+Caveat found during verification: some access networks intercept ALL
+port-53 traffic (the giveaway: answers carry the `ad` flag and EDNS, which
+this DNS server does not emit) and answer NXDOMAIN for Federate names from
+the public roots while google.com still resolves. On such networks test
+DNS from another vantage point; the native protocol (4077) and the HTTP
+door (80) are unaffected.
+
+Phone/desktop onboarding: set the device's DNS server to 195.201.171.223,
+then open `http://home.fed`. Networks with DNS interception need the
+hosts-file route ([hosts-setup.md](hosts-setup.md)) instead.
+
 ## Scaling out (later)
 
 Anyone can add capacity without touching Node 1: more gateway nodes

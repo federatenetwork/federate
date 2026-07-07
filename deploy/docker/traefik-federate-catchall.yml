@@ -1,0 +1,17 @@
+# Traefik v3 dynamic-config file: route every Host no other router claims
+# (priority 1 loses to every named-host router and to ACME challenges) to
+# the Federate gateway on loopback. Drop this into Traefik's file-provider
+# directory (e.g. /opt/traefik/dynamic/); with watch enabled it hot-loads.
+http:
+  routers:
+    federate-catchall:
+      rule: "HostRegexp(`.+`)"
+      priority: 1
+      entryPoints:
+        - web
+      service: federate-gateway
+  services:
+    federate-gateway:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8095"

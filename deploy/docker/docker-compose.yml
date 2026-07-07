@@ -1,0 +1,101 @@
+# Federate Node 1 + gateway + DNS as containers, for a shared VPS where
+# ports 80/443 belong to an existing reverse proxy (Traefik/Caddy/Nginx).
+#
+# - Node 1 HTTP stays on loopback (the proxy and local tools reach it);
+#   only the native protocol (4077) and DNS (53 on ONE public IP) are
+#   published.
+# - DNS binds a specific public IP so systemd-resolved on 127.0.0.53 is
+#   untouched.
+# - The browser door goes through the existing proxy: add a lowest-priority
+#   catch-all route on port 80 to 127.0.0.1:8095 (see
+#   traefik-federate-catchall.yml next to this file).
+# - Set PUBLIC_IP and, after `federate root init`, ROOT_KEY in a .env file.
+#
+# First boot (server stopped):
+#   docker run --rm --user "$(id -u):$(id -g)" -v $DATA/node1:/var/lib/federate/data \
+#     federate:latest federate root init --data-dir /var/lib/federate/data
+#   docker run --rm --user "$(id -u):$(id -g)" -v $DATA/node1:/var/lib/federate/data \
+#     federate:latest federate root seed --file /var/lib/federate/seeds/official-tlds.toml \
+#     --data-dir /var/lib/federate/data
+
+services:
+  federate-server:
+    image: federate:latest
+    container_name: federate-server
+    # Starts as root only to install the hairpin DNAT rules (health probes
+    # to sibling nodes' public endpoints; Docker skips same-bridge DNAT),
+    # then drops to RUN_AS before exec'ing the server.
+    cap_add: [NET_ADMIN]
+    environment:
+      RUN_AS: "${FEDERATE_UID:-1001}:${FEDERATE_GID:-1001}"
+      HAIRPIN_REDIRECTS: "${PUBLIC_IP}:8081=172.30.77.11:8081,${PUBLIC_IP}:8053=172.30.77.12:8053"
+    command: >
+      federate-server
+      --listen 0.0.0.0:9600
+      --native-listen 0.0.0.0:4077
+      --data-dir /var/lib/federate/data
+      --blocked-tlds /var/lib/federate/blocked_tlds.txt
+      --blocked-dir /var/lib/federate/blocked
+    volumes:
+      - ${FEDERATE_DATA:-./data}/node1:/var/lib/federate/data
+    ports:
+      - "127.0.0.1:9600:9600"   # HTTP API/bootstrap (proxy + local tools only)
+      - "4077:4077"             # native Federate protocol, public
+    restart: unless-stopped
+    networks: [federate]
+
+  federate-gatewayd:
+    image: federate:latest
+    container_name: federate-gatewayd
+    user: "${FEDERATE_UID:-1001}:${FEDERATE_GID:-1001}"
+    command: >
+      federate-gatewayd
+      --listen 0.0.0.0:8080
+      --health-listen 0.0.0.0:8081
+      --bootstrap http://federate-server:9600
+      --root-key ${ROOT_KEY}
+      --public-ip ${PUBLIC_IP}
+      --region ${REGION:-unknown}
+      --data-dir /gwdata
+    volumes:
+      - ${FEDERATE_DATA:-./data}/gatewayd:/gwdata
+    ports:
+      - "127.0.0.1:8095:8080"        # the reverse proxy routes Host catch-all here
+      - "${PUBLIC_IP}:8081:8081"     # health endpoint (directory health checks)
+    restart: unless-stopped
+    depends_on: [federate-server]
+    networks:
+      federate:
+        ipv4_address: 172.30.77.11
+
+  federate-dnsd:
+    image: federate:latest
+    container_name: federate-dnsd
+    user: "${FEDERATE_UID:-1001}:${FEDERATE_GID:-1001}"
+    command: >
+      federate-dnsd
+      --listen 0.0.0.0:5353
+      --health-listen 0.0.0.0:8053
+      --bootstrap http://federate-server:9600
+      --upstream ${DNS_UPSTREAM:-1.1.1.1:53}
+      --root-key ${ROOT_KEY}
+      --public-ip ${PUBLIC_IP}
+      --region ${REGION:-unknown}
+      --data-dir /dnsdata
+    volumes:
+      - ${FEDERATE_DATA:-./data}/dnsd:/dnsdata
+    ports:
+      - "${PUBLIC_IP}:53:5353/udp"
+      - "${PUBLIC_IP}:53:5353/tcp"
+      - "${PUBLIC_IP}:8053:8053"     # health endpoint
+    restart: unless-stopped
+    depends_on: [federate-server]
+    networks:
+      federate:
+        ipv4_address: 172.30.77.12
+
+networks:
+  federate:
+    ipam:
+      config:
+        - subnet: 172.30.77.0/24
