@@ -60,6 +60,9 @@ o request alega.
 | `update_domain_manifest` | chave do dono do domínio | apontar um domínio existente para um novo manifest assinado pelo dono |
 | `set_domain_status` | chave do operador do TLD ou chave raiz | suspender / reativar / revogar um domínio root-managed |
 | `issue_domain` | chave do operador do TLD | inserir um registro completo assinado pelo operador dentro do próprio TLD |
+| `create_tld` | Federate Root Key | criar um TLD oficial root-managed (é assim que o conjunto de TLDs é definido; arquivos de seed alimentam esta ação) |
+| `reserve_tld` | Federate Root Key | reservar um nome de TLD (registro não resolvível) |
+| `block_tld` | Federate Root Key | bloquear um nome de TLD (registro não resolvível) |
 | `delegate_tld` | Federate Root Key | criar um registro de TLD delegado |
 | `update_tld` | Federate Root Key | atualizar metadados mutáveis do TLD (endpoint, expiração, notas) |
 | `set_tld_status` | Federate Root Key | mudar o status de um TLD |
@@ -105,6 +108,9 @@ federate mutation inspect <mutation_id>
 federate domain update <domínio> --manifest <hash> --key-dir <dir-da-chave-do-dono>
 federate domain suspend <domínio> --key-dir <dir-da-chave-do-operador-ou-raiz>
 federate domain reinstate <domínio> --key-dir <dir-da-chave-do-operador-ou-raiz>
+federate tld create <tld> --purpose "..." --key-dir <dir-da-chave-raiz>
+federate tld reserve <tld> --reason "..." --key-dir <dir-da-chave-raiz>
+federate tld block <tld> --reason "..." --key-dir <dir-da-chave-raiz>
 federate tld delegate <tld> --owner <hex> --operator <hex> --key-dir <dir-da-chave-raiz>
 ```
 

@@ -174,12 +174,11 @@ impl RootZone {
     }
 
     /// Basic structural validation (signature checks live in `verify`).
+    /// An empty TLD map is legal: a freshly initialized registry has no
+    /// TLDs until they are created by explicit seed/mutation commands.
     pub fn validate(&self) -> Result<()> {
         if self.network.is_empty() {
             return Err(FederateError::InvalidRoot("empty network name".into()));
-        }
-        if self.tlds.is_empty() {
-            return Err(FederateError::InvalidRoot("no TLDs defined".into()));
         }
         for (fqdn, rec) in &self.domains {
             if !self.tlds.contains_key(&rec.tld) {

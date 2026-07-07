@@ -27,9 +27,17 @@ domain → local Federate resolver/daemon → Federate root zone → domain reco
 
 ```sh
 cargo build --release
+./target/release/federate root init --data-dir .federate-server                       # empty registry
+./target/release/federate root seed --file seeds/official-tlds.toml --data-dir .federate-server
 ./target/release/federate-server --listen 127.0.0.1:9000 &          # Node 1 (dev)
+./target/release/federate publish package sites/home-fed --domain home.fed \
+    --key-dir .federate-owner --bootstrap http://127.0.0.1:9000      # publish the demo site
 sudo ./target/release/federated --bootstrap http://127.0.0.1:9000    # daemon on port 80
 ```
+
+TLDs are database records, never code: the seed file is plain data and the
+whole TLD set is managed with `federate root seed` / `federate tld
+create|reserve|block|delegate` (see [root-registry.md](root-registry.md)).
 
 Add hosts-file mappings ([hosts-setup.md](hosts-setup.md)), then open **http://home.fed**.
 

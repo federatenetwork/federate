@@ -10,6 +10,7 @@ description = "Signed runtime mutations, replay protection, audit log, and the p
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+toml.workspace = true
 rand.workspace = true
 hex.workspace = true
 tracing.workspace = true

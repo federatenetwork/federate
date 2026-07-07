@@ -21,13 +21,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use federate_identity::NodeIdentity;
-use federate_manifest::Manifest;
 use federate_mutation::{MutationContext, MutationRequest, NonceStore, RegistryStore, SitePackage};
-use federate_naming::{
-    validate_tld_name, DomainRecord, DomainStatus, RegistryType, TargetType, TldMode, TldStatus,
-};
-use federate_root::{AuditEvent, Blocklists, RootZone, TldRecord, SIGNATURE_ALGORITHM};
-use std::collections::{BTreeMap, HashMap};
+use federate_naming::{validate_tld_name, DomainRecord, RegistryType};
+use federate_root::{Blocklists, RootZone, TldRecord};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,11 +36,6 @@ struct Args {
     /// Listen address (dev: 127.0.0.1:9000; production sits behind Caddy/Nginx)
     #[arg(long, default_value = federate_core::DEFAULT_SERVER_ADDR)]
     listen: SocketAddr,
-    /// Directory of site directories (home-fed/, joao-pagina/, ...) used to
-    /// SEED the registry on first boot only. After the persistent registry
-    /// exists, this directory is never scanned again.
-    #[arg(long, default_value = "sites")]
-    sites_dir: PathBuf,
     /// Data dir for keys and the persistent registry. Private keys live
     /// here and are never served; registry state lives in data_dir/registry.
     #[arg(long, default_value = ".federate-server")]
@@ -173,279 +165,6 @@ impl federate_transport::NodeService for NativeService {
     }
 }
 
-/// Turn a site dir name like "home-fed" into a domain "home.fed"
-/// (last hyphen separates label and TLD).
-fn dir_to_domain(dir: &str) -> Option<(String, String)> {
-    let (label, tld) = dir.rsplit_once('-')?;
-    Some((label.to_string(), tld.to_string()))
-}
-
-/// First-boot seed: build the initial signed state exactly as the old
-/// startup path did (official TLDs, sites/ scan, seed delegated TLDs) and
-/// adopt it as the persistent registry. Runs ONLY when no registry exists.
-fn seed_registry(
-    args: &Args,
-    root_key: &NodeIdentity,
-    operator_key: &NodeIdentity,
-    owner_key: &NodeIdentity,
-    blocklists: &Blocklists,
-) -> anyhow::Result<RegistryStore> {
-    let now = chrono::Utc::now().to_rfc3339();
-
-    let mut audit = Vec::new();
-    let mut audit_push = |action: &str, subject: &str, detail: Option<String>| {
-        audit.push(AuditEvent {
-            at: now.clone(),
-            actor: "root".into(),
-            action: action.into(),
-            subject: subject.into(),
-            detail,
-        });
-    };
-
-    // --- Official TLD records (root-managed) ---
-    let mut tlds = BTreeMap::new();
-    let sign_tld = |mut rec: TldRecord| -> anyhow::Result<TldRecord> {
-        rec.signature = Some(root_key.sign(&rec.signable_bytes()?));
-        Ok(rec)
-    };
-    for (tld, purpose) in federate_naming::FEDERATE_TLDS {
-        // Official TLDs may use reserved names (e.g. .fed) but must never
-        // collide with public IANA DNS or policy blocks.
-        let name = blocklists.validate_new_tld(tld, true)?;
-        let rec = sign_tld(TldRecord {
-            tld: name.clone(),
-            status: TldStatus::Official,
-            mode: TldMode::Official,
-            owner_public_key: root_key.node_id(),
-            operator_public_key: operator_key.node_id(),
-            operator_name: "Federate Network (root-managed)".into(),
-            registry_type: RegistryType::RootManaged,
-            registry_endpoint: None,
-            registry_manifest_hash: None,
-            registry_providers: Vec::new(),
-            policy_hash: None,
-            pricing: None,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            expires_at: None,
-            notes: Some(purpose.to_string()),
-            signature_algorithm: SIGNATURE_ALGORITHM.into(),
-            signature: None,
-        })?;
-        audit_push("tld.official.create", &format!(".{name}"), None);
-        tlds.insert(name, rec);
-    }
-
-    // Seed delegated TLDs (dev/demo data; runtime delegation goes through
-    // `federate tld delegate`). Each delegated TLD has its OWN operator key:
-    // the root signs the delegation, the operator signs the registry and its
-    // domain records. Records are inserted after sites are scanned, because
-    // the TLD record pins the hash of the operator-signed registry manifest.
-    // `.femboy` is a neutral technical test TLD.
-    const SEED_DELEGATED_TLDS: &[&str] = &["femboy"];
-    let mut delegated_ops: BTreeMap<String, NodeIdentity> = BTreeMap::new();
-    for seed in SEED_DELEGATED_TLDS {
-        let name = blocklists.validate_new_tld(seed, false)?;
-        let operator = NodeIdentity::load_or_create(&args.data_dir.join(format!("op-{name}")))?;
-        delegated_ops.insert(name, operator);
-    }
-
-    // --- Sites: manifests (owner-signed) + domain records (operator-signed).
-    // Official-TLD records go into the root zone; delegated-TLD records go
-    // into their TLD's operator-signed registry. ---
-    let mut manifests = BTreeMap::new();
-    let mut blocks: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut domains = BTreeMap::new();
-    let mut delegated_domains: BTreeMap<String, BTreeMap<String, DomainRecord>> = BTreeMap::new();
-
-    for entry in std::fs::read_dir(&args.sites_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let dir_name = entry.file_name().to_string_lossy().to_string();
-        let Some((label, tld)) = dir_to_domain(&dir_name) else {
-            tracing::warn!("skipping sites/{dir_name}: not label-tld shaped");
-            continue;
-        };
-        let Ok(tld) = validate_tld_name(&tld) else {
-            tracing::warn!("skipping sites/{dir_name}: invalid TLD");
-            continue;
-        };
-        if !tlds.contains_key(&tld) && !delegated_ops.contains_key(&tld) {
-            tracing::warn!("skipping sites/{dir_name}: TLD .{tld} not in root registry");
-            continue;
-        }
-        let label = federate_naming::validate_label(&label)?;
-        let domain = format!("{label}.{tld}");
-
-        let mut files = BTreeMap::new();
-        for file in walkdir::WalkDir::new(entry.path())
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-        {
-            let rel = file
-                .path()
-                .strip_prefix(entry.path())
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            let bytes = std::fs::read(file.path())?;
-            let hash = federate_storage::hash_bytes(&bytes);
-            blocks.push((hash.clone(), bytes));
-            files.insert(rel, hash);
-        }
-        if !files.contains_key("index.html") {
-            tracing::warn!("skipping {domain}: no index.html");
-            continue;
-        }
-
-        // Manifest signed by the domain owner key.
-        let mut manifest = Manifest {
-            domain: domain.clone(),
-            version: 1,
-            entry: "index.html".into(),
-            files,
-            owner_public_key: owner_key.node_id(),
-            created_at: now.clone(),
-            signature_algorithm: SIGNATURE_ALGORITHM.into(),
-            signature: None,
-        };
-        manifest.signature = Some(owner_key.sign(&manifest.signable_bytes()?));
-        let bytes = serde_json::to_vec(&manifest)?;
-        let manifest_hash = federate_storage::hash_bytes(&bytes);
-        manifests.insert(manifest_hash.clone(), bytes);
-
-        // Domain record signed by the TLD's operator key: the official
-        // operator for root-managed TLDs, the delegated operator otherwise.
-        let mut record = DomainRecord {
-            domain: domain.clone(),
-            tld: tld.clone(),
-            label,
-            owner_public_key: owner_key.node_id(),
-            target_type: TargetType::Manifest,
-            manifest_hash,
-            service_id: None,
-            node_id: None,
-            status: DomainStatus::Active,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            expires_at: None,
-            renewal: None,
-            pricing: None,
-            signature_algorithm: SIGNATURE_ALGORITHM.into(),
-            signature: None,
-        };
-        match delegated_ops.get(&tld) {
-            Some(operator) => {
-                record.signature = Some(operator.sign(&record.signable_bytes()?));
-                delegated_domains
-                    .entry(tld.clone())
-                    .or_default()
-                    .insert(domain.clone(), record);
-                tracing::info!("seeded {domain} (delegated registry .{tld})");
-            }
-            None => {
-                record.signature = Some(operator_key.sign(&record.signable_bytes()?));
-                audit_push("domain.register", &domain, None);
-                domains.insert(domain.clone(), record);
-                tracing::info!("seeded {domain}");
-            }
-        }
-    }
-
-    // --- Delegated TLDs: operator-signed registry manifests + root-signed
-    // TLD records pinning them ---
-    // The registry travels as a content-addressed manifest
-    // (delegated_manifest mode): the root-signed TLD record pins its hash,
-    // clients fetch it like any manifest and verify the operator signature.
-    let registry_version = chrono::Utc::now().timestamp().max(0) as u64;
-    let mut registries: BTreeMap<String, (Vec<u8>, federate_registry::TldRegistry)> =
-        BTreeMap::new();
-    for (tld, operator) in &delegated_ops {
-        let registry = federate_registry::TldRegistry::signed(
-            operator,
-            tld,
-            registry_version,
-            &now,
-            delegated_domains.remove(tld).unwrap_or_default(),
-        )
-        .map_err(|e| format!("cannot sign .{tld} registry: {e}"))?;
-        let registry_bytes = serde_json::to_vec(&registry)?;
-        let registry_hash = federate_storage::hash_bytes(&registry_bytes);
-        manifests.insert(registry_hash.clone(), registry_bytes.clone());
-
-        tlds.insert(
-            tld.clone(),
-            sign_tld(TldRecord {
-                tld: tld.clone(),
-                status: TldStatus::Delegated,
-                mode: TldMode::Delegated,
-                owner_public_key: operator.node_id(),
-                operator_public_key: operator.node_id(),
-                operator_name: format!("delegated operator of .{tld} (dev seed)"),
-                registry_type: RegistryType::DelegatedManifest,
-                registry_endpoint: None,
-                registry_manifest_hash: Some(registry_hash),
-                registry_providers: Vec::new(),
-                policy_hash: None,
-                pricing: Some(serde_json::json!({
-                    "note": "pricing metadata placeholder; no payments in this phase"
-                })),
-                created_at: now.clone(),
-                updated_at: now.clone(),
-                expires_at: Some("2027-07-03T00:00:00Z".into()),
-                notes: Some(
-                    "Dev seed of a delegated TLD: the operator key signs the registry and \
-                     its domain records; the root only signs this delegation."
-                        .into(),
-                ),
-                signature_algorithm: SIGNATURE_ALGORITHM.into(),
-                signature: None,
-            })?,
-        );
-        audit_push(
-            "tld.delegate",
-            &format!(".{tld}"),
-            Some(format!(
-                "seed delegation; registry v{registry_version} with {} domain(s)",
-                registry.domains.len()
-            )),
-        );
-        registries.insert(tld.clone(), (registry_bytes, registry));
-    }
-
-    // --- Signed root zone ---
-    // Version must be monotonic across restarts and mutations (daemons
-    // reject a zone older than one they already verified; that is the
-    // rollback protection). The seed derives it from the wall clock; every
-    // accepted mutation afterwards bumps it strictly.
-    let root_version = chrono::Utc::now().timestamp().max(0) as u64;
-    let mut root = RootZone {
-        network: federate_core::NETWORK_NAME.into(),
-        root_version,
-        generated_at: now.clone(),
-        root_public_key: root_key.node_id(),
-        tlds,
-        domains,
-        audit,
-        signature_algorithm: SIGNATURE_ALGORITHM.into(),
-        signature: None,
-    };
-    root.signature = Some(root_key.sign(&root.signable_bytes()?));
-    root.verify(&root_key.node_id())?; // self-check before serving
-
-    Ok(RegistryStore::init(
-        &args.data_dir.join("registry"),
-        root,
-        registries,
-        manifests,
-        blocks,
-    )?)
-}
-
 fn build_store(args: &Args) -> anyhow::Result<Store> {
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -453,7 +172,6 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
     // Keys are NEVER part of registry records. ---
     let root_key = NodeIdentity::load_or_create(&args.data_dir.join("root"))?;
     let operator_key = NodeIdentity::load_or_create(&args.data_dir.join("official-operator"))?;
-    let owner_key = NodeIdentity::load_or_create(&args.data_dir.join("dev-owner"))?;
     let node_identity = NodeIdentity::load_or_create(&args.data_dir)?;
 
     // --- Blocklists ---
@@ -466,8 +184,11 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         blocklists.brand_safety.len()
     );
 
-    // --- Persistent registry: seed on first boot ONLY; afterwards the
-    // durable state is the source of truth and sites/ is never re-scanned.
+    // --- Persistent registry: the database is the ONLY source of truth.
+    // The server never seeds TLDs from code. A missing registry is
+    // initialized EMPTY (zero TLDs); the TLD set arrives exclusively via
+    // `federate root seed --file <seed.toml>` / `federate tld create`
+    // (signed, audited mutations).
     let registry_dir = args.data_dir.join("registry");
     let registry = if RegistryStore::exists(&registry_dir) {
         let store = RegistryStore::open(&registry_dir, &root_key.node_id())?;
@@ -481,13 +202,14 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
         );
         store
     } else {
-        let store = seed_registry(args, &root_key, &operator_key, &owner_key, &blocklists)?;
-        tracing::info!(
-            "first boot: registry seeded into {} (root zone v{}, {} TLDs, {} domains)",
+        let store = federate_mutation::init_empty_registry(&registry_dir, &root_key)?;
+        tracing::warn!(
+            "first boot: EMPTY registry initialized at {}; no TLDs exist yet. \
+             Seed them with `federate root seed --file seeds/official-tlds.toml \
+             --data-dir {}` (server stopped) or create them at runtime with \
+             `federate tld create`",
             registry_dir.display(),
-            store.zone().root_version,
-            store.zone().tlds.len(),
-            store.zone().domains.len()
+            args.data_dir.display()
         );
         store
     };

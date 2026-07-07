@@ -151,6 +151,39 @@ enum RootCmd {
     Show,
     /// Fetch the root zone and verify the full signature chain
     Verify,
+    /// Initialize an EMPTY persistent registry (explicit first step; creates
+    /// zero TLDs). Run before starting federate-server for the first time.
+    Init {
+        /// Node data dir (keys live here; registry goes to <dir>/registry)
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+    },
+    /// Create TLD records from an external seed file (e.g.
+    /// seeds/official-tlds.toml) through signed, audited mutations. Refuses
+    /// when the registry already holds TLDs; --force adds missing entries
+    /// only, never overwrites. Run with federate-server STOPPED.
+    Seed {
+        /// TOML seed file with [[tlds]] entries (name, mode, purpose)
+        #[arg(long)]
+        file: std::path::PathBuf,
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+        /// Authoritative IANA/public TLD blocklist file
+        #[arg(long, default_value = "blocked_tlds.txt")]
+        blocked_tlds: std::path::PathBuf,
+        /// Reserved/policy/brand-safety blocklist dir
+        #[arg(long, default_value = "data/blocked")]
+        blocked_dir: std::path::PathBuf,
+        /// Add missing seed entries to an already-populated registry
+        #[arg(long)]
+        force: bool,
+    },
+    /// Registry status: the local data dir when --data-dir is given,
+    /// otherwise the bootstrap node's /v1/registry/status
+    Status {
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -171,17 +204,39 @@ enum TldCmd {
         #[arg(long)]
         operator: String,
     },
-    /// Block a TLD (admin/seed-data-only in this phase)
+    /// Create an official root-managed TLD at runtime (Federate Root Key;
+    /// signed mutation). Delegated TLDs use `federate tld delegate`.
+    Create {
+        tld: String,
+        /// Only "official" is valid here
+        #[arg(long, default_value = "official")]
+        mode: String,
+        /// Human purpose stored in the record
+        #[arg(long)]
+        purpose: String,
+        /// Directory holding the Federate Root Key
+        #[arg(long)]
+        key_dir: std::path::PathBuf,
+    },
+    /// Block a TLD name (Federate Root Key; signed mutation creating a
+    /// non-resolvable blocked record)
     Block {
         tld: String,
         #[arg(long)]
         reason: String,
+        /// Directory holding the Federate Root Key
+        #[arg(long)]
+        key_dir: std::path::PathBuf,
     },
-    /// Reserve a TLD (admin/seed-data-only in this phase)
+    /// Reserve a TLD name (Federate Root Key; signed mutation creating a
+    /// non-resolvable reserved record)
     Reserve {
         tld: String,
         #[arg(long)]
         reason: String,
+        /// Directory holding the Federate Root Key
+        #[arg(long)]
+        key_dir: std::path::PathBuf,
     },
     /// Verify a TLD record's signature against the root key
     Verify { tld: String },
@@ -853,6 +908,121 @@ async fn root_cmd(cli: &Ctx, cmd: RootCmd) {
                 Err(e) => die(&format!("[!!] root zone verification FAILED: {e}")),
             }
         }
+        RootCmd::Init { data_dir } => {
+            let root = NodeIdentity::load_or_create(&data_dir.join("root"))
+                .unwrap_or_else(|e| die(&format!("cannot load/create root key: {e}")));
+            match federate_mutation::init_empty_registry(&data_dir.join("registry"), &root) {
+                Ok(store) => {
+                    println!("[ok] empty registry initialized");
+                    println!("     dir          : {}", store.dir().display());
+                    println!("     root key     : {}", root.node_id());
+                    println!(
+                        "     root zone    : v{} (0 TLDs, 0 domains)",
+                        store.zone().root_version
+                    );
+                    println!(
+                        "\nnext: federate root seed --file seeds/official-tlds.toml --data-dir {}",
+                        data_dir.display()
+                    );
+                }
+                Err(e) => die(&format!("[!!] init failed: {e}")),
+            }
+        }
+        RootCmd::Seed {
+            file,
+            data_dir,
+            blocked_tlds,
+            blocked_dir,
+            force,
+        } => root_seed(&file, &data_dir, &blocked_tlds, &blocked_dir, force),
+        RootCmd::Status {
+            data_dir: Some(dir),
+        } => {
+            let registry_dir = dir.join("registry");
+            if !federate_mutation::RegistryStore::exists(&registry_dir) {
+                println!("registry: NOT initialized at {}", registry_dir.display());
+                println!(
+                    "initialize it with: federate root init --data-dir {}",
+                    dir.display()
+                );
+                return;
+            }
+            let root = NodeIdentity::load_or_create(&dir.join("root"))
+                .unwrap_or_else(|e| die(&format!("cannot load root key: {e}")));
+            let store = federate_mutation::RegistryStore::open(&registry_dir, &root.node_id())
+                .unwrap_or_else(|e| die(&format!("[!!] cannot open registry: {e}")));
+            println!("registry     : {}", registry_dir.display());
+            println!("root key     : {}", store.zone().root_public_key);
+            println!("root zone    : v{}", store.zone().root_version);
+            println!("tlds         : {}", store.zone().tlds.len());
+            println!("domains      : {}", store.zone().domains.len());
+            println!("mutations    : {}", store.mutation_count());
+            println!("audit events : {}", store.audit_count());
+        }
+        RootCmd::Status { data_dir: None } => {
+            match node_get(&cli.bootstrap, "/v1/registry/status").await {
+                Ok(v) => pretty(&v),
+                Err(e) => die(&format!("cannot fetch registry status ({e})")),
+            }
+        }
+    }
+}
+
+/// Offline seed: apply an external TOML seed file to the local registry
+/// through the normal signed, audited mutation path. Never runs implicitly;
+/// never overwrites existing records.
+fn root_seed(
+    file: &std::path::Path,
+    data_dir: &std::path::Path,
+    blocked_tlds: &std::path::Path,
+    blocked_dir: &std::path::Path,
+    force: bool,
+) {
+    eprintln!(
+        "note: offline seeding writes the registry directly; run it with federate-server STOPPED."
+    );
+    let seed = federate_mutation::SeedFile::load(file)
+        .unwrap_or_else(|e| die(&format!("cannot load seed file {}: {e}", file.display())));
+    let root = NodeIdentity::load_or_create(&data_dir.join("root"))
+        .unwrap_or_else(|e| die(&format!("cannot load root key: {e}")));
+    let operator = NodeIdentity::load_or_create(&data_dir.join("official-operator"))
+        .unwrap_or_else(|e| die(&format!("cannot load official operator key: {e}")));
+    let blocklists = federate_root::Blocklists::load(blocked_tlds, blocked_dir)
+        .unwrap_or_else(|e| die(&format!("cannot load blocklists: {e}")));
+    let registry_dir = data_dir.join("registry");
+    let mut store = if federate_mutation::RegistryStore::exists(&registry_dir) {
+        federate_mutation::RegistryStore::open(&registry_dir, &root.node_id())
+            .unwrap_or_else(|e| die(&format!("[!!] cannot open registry: {e}")))
+    } else {
+        federate_mutation::init_empty_registry(&registry_dir, &root)
+            .unwrap_or_else(|e| die(&format!("[!!] cannot initialize registry: {e}")))
+    };
+    let ctx = federate_mutation::MutationContext {
+        root: &root,
+        official_operator: &operator,
+        blocklists: &blocklists,
+        now: chrono::Utc::now(),
+    };
+    match federate_mutation::apply_seed(&mut store, &seed, &ctx, force) {
+        Ok(outcome) => {
+            println!(
+                "[ok] seed applied: {} TLD(s) created, {} already existed",
+                outcome.created.len(),
+                outcome.skipped_existing.len()
+            );
+            for name in &outcome.created {
+                println!("  + .{name}");
+            }
+            for name in &outcome.skipped_existing {
+                println!("  = .{name} (kept as-is)");
+            }
+            println!(
+                "root zone now v{} ({} TLDs)",
+                store.zone().root_version,
+                store.zone().tlds.len()
+            );
+        }
+        Err(e) => die(&format!("[!!] seed refused: {e}")),
     }
 }
 
@@ -963,13 +1133,39 @@ async fn tld_cmd(cli: &Ctx, cmd: TldCmd) {
             };
             sign_and_submit_mutation(cli, &key_dir, action).await;
         }
-        TldCmd::Block { tld, reason } => {
-            println!("`federate tld block` is admin/seed-data-only in this phase.");
-            println!("To block .{tld} today, add it to data/blocked/policy-tlds.txt (reason: {reason}) and restart federate-server.");
+        TldCmd::Create {
+            tld,
+            mode,
+            purpose,
+            key_dir,
+        } => {
+            if mode != "official" {
+                die("`federate tld create` only creates official TLDs; use `federate tld delegate` for delegated ones");
+            }
+            let tld = federate_naming::validate_tld_name(&tld)
+                .unwrap_or_else(|e| die(&format!("invalid TLD: {e}")));
+            let action = federate_mutation::MutationAction::CreateTld { tld, purpose };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
         }
-        TldCmd::Reserve { tld, reason } => {
-            println!("`federate tld reserve` is admin/seed-data-only in this phase.");
-            println!("To reserve .{tld} today, add it to data/blocked/reserved-tlds.txt (reason: {reason}) and restart federate-server.");
+        TldCmd::Block {
+            tld,
+            reason,
+            key_dir,
+        } => {
+            let tld = federate_naming::validate_tld_name(&tld)
+                .unwrap_or_else(|e| die(&format!("invalid TLD: {e}")));
+            let action = federate_mutation::MutationAction::BlockTld { tld, reason };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
+        }
+        TldCmd::Reserve {
+            tld,
+            reason,
+            key_dir,
+        } => {
+            let tld = federate_naming::validate_tld_name(&tld)
+                .unwrap_or_else(|e| die(&format!("invalid TLD: {e}")));
+            let action = federate_mutation::MutationAction::ReserveTld { tld, reason };
+            sign_and_submit_mutation(cli, &key_dir, action).await;
         }
     }
 }

@@ -4,16 +4,16 @@ Date: 2026-07-06 (updated 2026-07-07 with the persistent runtime-mutable registr
 
 ## Executive summary
 
-The repo is a working single-operator overlay network with a genuinely native protocol path and a complete, tested signature chain. Root zone, TLD records, delegated TLD registries, domain records, manifests, and content blocks are all real, signed, verified fail-closed, and resolvable end to end over the native protocol with HTTP as fallback. Operator and owner tooling exists and works from independent machines. NEW: the root registry is now persistent and runtime-mutable; Node 1 seeds it on first boot only, and every later change arrives as a signed, nonce-protected, versioned, audited mutation (publish/update/suspend/reinstate domains, delegate TLDs, re-pin delegated registries) or a site package ingest, with no seed edits and no restarts. What does NOT exist: payments, key rotation, runtime abuse-report channel, native browser, non-HTML runtime, and any actual public deployment. 98 tests, all validation commands pass.
+The repo is a working single-operator overlay network with a genuinely native protocol path and a complete, tested signature chain. Root zone, TLD records, delegated TLD registries, domain records, manifests, and content blocks are all real, signed, verified fail-closed, and resolvable end to end over the native protocol with HTTP as fallback. Operator and owner tooling exists and works from independent machines. NEW: the root registry is persistent and runtime-mutable AND the only TLD source of truth: no hardcoded TLD list exists in runtime code. A new node initializes an empty registry, TLDs arrive exclusively through `federate root seed` (external TOML data file) or signed `tld create/reserve/block/delegate` mutations, and every later change arrives as a signed, nonce-protected, versioned, audited mutation or a site package ingest, with no code edits, no recompiles, no restarts. What does NOT exist: payments, key rotation, runtime abuse-report channel, native browser, non-HTML runtime, and any actual public deployment. 105 tests, all validation commands pass.
 
 ## What is real today
 
 - Full verified resolution chain, both doors (native `fed://` path and HTTP gateway), one engine (`federate-resolution`).
-- **Persistent, runtime-mutable root registry** (`federate-mutation` + federate-server): durable state under `data_dir/registry/` (signed zone, delegated registries, content stores, append-only signed audit log, mutation history, per-version snapshots), seed runs on first boot only, fail-closed re-verification on every load, atomic writes, no private keys in records.
+- **Persistent, runtime-mutable root registry, sole TLD source of truth** (`federate-mutation` + federate-server): durable state under `data_dir/registry/` (signed zone, delegated registries, content stores, append-only signed audit log, mutation history, per-version snapshots), fail-closed re-verification on every load, atomic writes, no private keys in records. The server never creates TLDs from code: a missing registry initializes EMPTY; `federate root init` + `federate root seed --file seeds/official-tlds.toml` (refuses populated registries; --force adds missing only) and `tld create/reserve/block/delegate` mutations are the only ways TLDs exist. Live-verified: init, seed of 23 TLDs, re-seed refusal, runtime create/reserve, publish + native fetch under a runtime-created TLD, restart preserving all of it.
 - **Signed mutation API**: envelope with server-issued single-use nonce (challenge-response), 5-minute timestamp window, self-certifying BLAKE3 mutation ids persisted across restarts, per-target monotonic versions, authorization against current signed state (root / TLD operator / domain owner), domain status transition matrix, root-signed audit event per accepted mutation, strict root_version increase (client rollback protection preserved). Endpoints: POST /v1/mutations/nonce, /v1/mutations, /v1/ingest/package; GET /v1/mutations/:id, /v1/mutations/target/:kind/:id, /v1/registry/{status,audit,verify}; POST /v1/registry/snapshot.
 - **Site package ingest + publishing CLI**: `federate publish package ./dist --domain x.pagina` (one step), `federate registry submit-package`, `federate domain update/suspend/reinstate`, `federate tld delegate`, `federate mutation nonce/inspect`, `federate registry status/audit/snapshot/verify`. Live-verified end to end: publish, native fetch, suspend (resolution blocked), reinstate, runtime TLD delegation, wrong-key 403, server restart with full state preserved.
 - Native protocol v1 (framed JSON over TCP, port 4077): handshake with version negotiation, root/manifest/block/registry/record/status messages, served by Node 1 and noded, consumed by the resolver and the CLI. Verified live repeatedly with HTTP dead.
-- Delegated TLDs: signed `TldRegistry`, 4 registry modes, fail-closed verification, per-TLD offline cache, version rollback protection. The `.femboy` seed and `eu.femboy` resolve through the delegated path.
+- Delegated TLDs: signed `TldRegistry`, 4 registry modes, fail-closed verification, per-TLD offline cache, version rollback protection. Delegations are created at runtime (`federate tld delegate`); the old `.femboy` code seed is gone.
 - Operator/owner tooling: `federate site package` (blocks + owner-signed manifest, `--install` into node stores), `federate operator sign-record / build-registry / verify-registry`, noded `registry_files` serving. Verified live: one noded served registry + manifest + blocks natively with zero Node 1 involvement.
 - DNS server: UDP + TCP, port-53 capable, answers Federate TLDs with up to 8 healthy gateway IPs (TTL 30s), forwards everything else upstream with spoofing guards, SERVFAIL when no gateways.
 - Node directory: signed registrations (SSRF-guarded), health checking, role queries, signed block announcements, persistence across restarts, 5000-node cap, stale pruning.
@@ -25,7 +25,7 @@ The repo is a working single-operator overlay network with a genuinely native pr
 - **Registry/domain lifecycle**: statuses fully enforced at resolution AND changeable at runtime via signed mutations (suspend/reinstate/revoke, TLD status changes, delegation). Still missing: application/approval workflow and payments; `tld apply` and `/v1/applications` remain stubs (`tld approve` now points at `tld delegate`).
 - **CDN/storage**: LRU cache, fetch-on-miss, signed announcements, provider ranking (region + latency) all real; but no replication targets, no pinning, and directory-based provider discovery for manifests/registries uses only configured defaults, not per-hash announcements.
 - **Search**: real crawler through the verifying resolver, opt-out honored, TF ranking, no ads/tracking/AI-training. But the index is in-memory only, rebuilds every 10 minutes from scratch, ranking is naive, no UI site is wired to `fed.busca` in the repo, and only root-zone (official TLD) domains are crawled.
-- **Deployment**: complete docs (Hetzner-style VPS, hardened systemd units, Caddy host-routing, ufw, port-53 freeing, key backup, rollback), Dockerfile, launchd plist. Never executed against a real server; and the deploy docs predate the native listener: **no `4077/tcp` in the ufw list and no `--native-listen` in the systemd unit**.
+- **Deployment**: complete docs (Hetzner-style VPS, hardened systemd units, Caddy host-routing, ufw incl. 4077/tcp, port-53 freeing, key + registry backup, rollback, explicit root init/seed steps), Dockerfile, launchd plist. Never executed against a real server.
 - **Protocol**: `GetProviders`/`Providers` messages are defined and documented, served by nobody, used by nobody.
 
 ## What is only stubbed / docs only
@@ -48,14 +48,14 @@ The repo is a working single-operator overlay network with a genuinely native pr
 |---|---|---|
 | federate-core | errors, config, canonical JSON signing | real; used by all |
 | federate-identity | Ed25519 keys on disk (0600), sign/verify | real |
-| federate-naming | TLD/label rules, 23 official TLDs, record types, statuses, expiry | real |
+| federate-naming | TLD/label naming rules, record types, statuses, expiry (no TLD list; the set is database state) | real |
 | federate-uri | `fed://` parsing, HTTP-to-URI translation | real |
 | federate-protocol | wire messages v0+v1, framing, negotiation | real |
 | federate-transport | framed TCP, timeouts/caps, serve loop, NodeService trait | real |
 | federate-root | RootZone, TldRecord, blocklists, disk cache | real |
 | federate-registry | TldRegistry (delegated), RegistryView, HTTP registry client, file loader | real |
 | federate-manifest | signed site manifests, path-to-hash mapping | real |
-| federate-mutation | signed mutation envelopes, nonce store, signed audit events, persistent RegistryStore (state + logs + snapshots + apply path) | real; 23 tests incl. native-protocol e2e |
+| federate-mutation | signed mutation envelopes, nonce store, signed audit events, persistent RegistryStore (state + logs + snapshots + apply path), seed-file init | real; 30 tests incl. native-protocol e2e |
 | federate-storage | BLAKE3, traversal-proof BlockStore | real |
 | federate-client | HTTP compatibility client (capped reads) | real; explicitly the fallback layer |
 | federate-resolution | THE engine: chain verification, native-first fetch, caches, rollback | real; heart of the system, 17 tests |
@@ -71,9 +71,9 @@ The repo is a working single-operator overlay network with a genuinely native pr
 
 | Binary | Purpose | Status |
 |---|---|---|
-| federate-server | Node 1: persistent runtime-mutable registry (seed on first boot only), signed mutation + package ingest endpoints, serves native+HTTP, hosts the directory | real; single root authority |
+| federate-server | Node 1: persistent runtime-mutable registry (NEVER seeds TLDs from code; empty init + explicit seed commands), signed mutation + package ingest endpoints, serves native+HTTP, hosts the directory | real; single root authority |
 | federated | local daemon: gateway :80, API :7777, native discovery | real |
-| federate (CLI) | 20+ command groups incl. fetch --trace, node ping, delegated-registry, operator, site, publish, registry, mutation, domain update/suspend/reinstate, tld delegate | real; `tld apply` still informational |
+| federate (CLI) | 20+ command groups incl. fetch --trace, node ping, delegated-registry, operator, site, publish, registry, mutation, root init/seed/status, domain update/suspend/reinstate, tld create/reserve/block/delegate | real; `tld apply` still informational |
 | federate-noded | multi-role node (gateway/dns/storage/cdn/search/root-mirror/bootstrap), native listener, registry_files | real |
 | federate-dnsd | standalone DNS node | real |
 | federate-gatewayd | standalone gateway node | real |
@@ -115,7 +115,7 @@ Implemented and served: `Hello/Welcome` (version negotiation, capabilities), `Ge
 
 ## TLD and registry state
 
-- 23 official TLDs seeded root-managed; 1 delegated seed (`.femboy`, delegated_manifest, own operator key, expiry 2027).
+- TLDs are DATABASE records only: no hardcoded TLD list exists in runtime code (FEDERATE_TLDS / SEED_DELEGATED_TLDS removed; a source-scan test enforces absence). The 23 official TLDs live in `seeds/official-tlds.toml` (plain data) and enter the registry only via `federate root init` + `federate root seed` or `federate tld create|reserve|block|delegate` mutations. The server initializes an EMPTY registry on a missing state dir and never creates TLDs from code.
 - Blocked: full IANA list (`blocked_tlds.txt`); reserved: 8 names; policy/brand-safety lists exist but are empty.
 - Operators CAN operate their own TLD today: sign records, build/verify the registry, serve it from their own noded (`delegated_native`), all off-root. Live-verified.
 - Delegations are created at runtime now: `federate tld delegate` (root-key-signed mutation). `delegated_manifest` operators re-pin their registry hash with an `update_registry_pointer` mutation (operator-signed, version-monotonic). `SEED_DELEGATED_TLDS` only matters on first boot. Still no application/approval/payment flow around it.
@@ -147,14 +147,14 @@ Docs and units complete on paper: hardened systemd (NoNewPrivileges, ProtectSyst
 
 ## Tests and validation
 
-98 test functions across 21 crates (mutation 23, resolution 17, registry 10, naming 6, directory 5, root 5, uri 5, dns 5, protocol 4, gateway 3, search 3, others 1-2). Strong coverage: the whole trust chain including adversarial cases (forged zones/registries/records/blocks, replay/rollback, expiry, traversal, SSRF, XSS-escaping, TCP-DNS framing abuse), plus the full mutation surface: first-boot seed, restart persistence, tampered-state-fails-boot, unsigned/wrong-signer/replayed/stale/rollback rejection, owner/operator/root authorization (incl. cross-TLD denial), status transition matrix, delegated pointer rollback, and a runtime-published package resolving over the NATIVE protocol through the real verifying resolver. Zero tests: the 7 binaries' main.rs wiring (server seed/route assembly, noded roles, CLI handlers), federate-client, block announce/serve loops, gateway ETag-vs-live-server integration. No harness spawning real binaries in CI (the full publish/suspend/restart flow was verified live against a real server + CLI during development).
+105 test functions across 21 crates (mutation 30, resolution 17, registry 10, naming 6, directory 5, root 5, uri 5, dns 5, protocol 4, gateway 3, search 3, others 1-2). Strong coverage: the whole trust chain including adversarial cases (forged zones/registries/records/blocks, replay/rollback, expiry, traversal, SSRF, XSS-escaping, TCP-DNS framing abuse), plus the full mutation surface: first-boot seed, restart persistence, tampered-state-fails-boot, unsigned/wrong-signer/replayed/stale/rollback rejection, owner/operator/root authorization (incl. cross-TLD denial), status transition matrix, delegated pointer rollback, a runtime-published package resolving over the NATIVE protocol through the real verifying resolver, and the TLD source-of-truth suite: empty explicit init, seed-file application, re-seed refusal, --force adds-missing-only, seed/mutation TLD persistence across restart, blocked_tlds rejection, a runtime-created TLD resolving natively with zero code change, and a source scan proving no hardcoded TLD list token exists in any crate. Zero tests: the 7 binaries' main.rs wiring (server seed/route assembly, noded roles, CLI handlers), federate-client, block announce/serve loops, gateway ETag-vs-live-server integration. No harness spawning real binaries in CI (the full publish/suspend/restart flow was verified live against a real server + CLI during development).
 
 Validation run 2026-07-07, all green:
 
 ```
 cargo fmt --all --check      ok (no diff)
 cargo clippy --workspace --all-targets -- -D warnings   ok
-cargo test --workspace       98 passed, 0 failed
+cargo test --workspace       105 passed, 0 failed
 cargo build --release        ok
 ```
 

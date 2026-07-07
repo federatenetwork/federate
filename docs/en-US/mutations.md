@@ -60,6 +60,9 @@ anything the request claims.
 | `update_domain_manifest` | domain owner key | point an existing domain at a new owner-signed manifest |
 | `set_domain_status` | TLD operator key or root key | suspend / reinstate / revoke a root-managed domain |
 | `issue_domain` | TLD operator key | insert a full operator-signed record inside the operator's own TLD |
+| `create_tld` | Federate Root Key | create an official root-managed TLD (this is how the TLD set is defined; seed files feed this action) |
+| `reserve_tld` | Federate Root Key | reserve a TLD name (non-resolvable record) |
+| `block_tld` | Federate Root Key | block a TLD name (non-resolvable record) |
 | `delegate_tld` | Federate Root Key | create a delegated TLD record |
 | `update_tld` | Federate Root Key | update mutable TLD metadata (endpoint, expiry, notes) |
 | `set_tld_status` | Federate Root Key | change a TLD status |
@@ -105,6 +108,9 @@ federate mutation inspect <mutation_id>
 federate domain update <domain> --manifest <hash> --key-dir <owner-key-dir>
 federate domain suspend <domain> --key-dir <operator-or-root-key-dir>
 federate domain reinstate <domain> --key-dir <operator-or-root-key-dir>
+federate tld create <tld> --purpose "..." --key-dir <root-key-dir>
+federate tld reserve <tld> --reason "..." --key-dir <root-key-dir>
+federate tld block <tld> --reason "..." --key-dir <root-key-dir>
 federate tld delegate <tld> --owner <hex> --operator <hex> --key-dir <root-key-dir>
 ```
 

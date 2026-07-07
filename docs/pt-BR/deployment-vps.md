@@ -333,9 +333,11 @@ gravadas com `0600` e nunca servidas por nenhuma API.
 
 ## Comportamento de restart
 
-`Restart=on-failure` + `RestartSec=3` em toda unit. No PRIMEIRO boot o
-servidor faz o seed do registry persistente a partir de `sites/` e das
-constantes de seed; em todo boot seguinte ele carrega `data/registry/` como
+`Restart=on-failure` + `RestartSec=3` em toda unit. O servidor NUNCA cria
+TLDs a partir de código: inicialize e faça o seed do registry
+explicitamente antes do primeiro start (`federate root init` + `federate
+root seed --file seeds/official-tlds.toml --data-dir
+/var/lib/federate/data`), e então todo boot carrega `data/registry/` como
 fonte da verdade, re-verificado contra a chave raiz (veja
 [root-registry.md](root-registry.md)). Versões da zona raiz crescem
 estritamente entre mutações e reinícios, então os daemons (que rejeitam

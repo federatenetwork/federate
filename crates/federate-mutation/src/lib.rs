@@ -18,6 +18,7 @@
 mod audit;
 mod nonce;
 mod request;
+mod seed;
 mod store;
 
 pub use audit::AuditRecord;
@@ -27,6 +28,7 @@ pub use request::{
     TargetKind, MAX_PACKAGE_BLOCKS, MAX_PACKAGE_BYTES, MUTATION_MAX_AGE_SECS, NONCE_TTL_SECS,
     SIGNATURE_ALGORITHM,
 };
+pub use seed::{apply_seed, init_empty_registry, SeedFile, SeedOutcome, SeedTld};
 pub use store::{AppliedMutation, MutationContext, RegistryStore};
 
 #[cfg(test)]

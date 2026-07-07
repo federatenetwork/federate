@@ -329,11 +329,12 @@ written `0600` and never served by any API.
 
 ## Restart behavior
 
-`Restart=on-failure` + `RestartSec=3` in every unit. On the FIRST boot the
-server seeds the persistent registry from `sites/` and the seed constants;
-on every later boot it loads `data/registry/` as the source of truth,
-re-verified against the root key (see
-[root-registry.md](root-registry.md)). Root zone versions increase strictly
+`Restart=on-failure` + `RestartSec=3` in every unit. The server NEVER
+creates TLDs from code: initialize and seed the registry explicitly before
+first start (`federate root init` + `federate root seed --file
+seeds/official-tlds.toml --data-dir /var/lib/federate/data`), then every
+boot loads `data/registry/` as the source of truth, re-verified against the
+root key (see [root-registry.md](root-registry.md)). Root zone versions increase strictly
 across mutations and restarts, so daemons (which reject zones older than
 one they already verified) always accept the current zone. Registered nodes
 persist in `data/directory-nodes.json` and re-verify on load; nodes also

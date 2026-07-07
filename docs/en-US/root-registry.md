@@ -7,21 +7,45 @@ every restart. The Federate Root Registry is durable, runtime-mutable signed
 state: it survives restarts, and it changes at runtime only through
 [signed mutations](mutations.md) and the [package ingest path](publishing.md).
 
-## Seed is first-boot only
+## The database is the only source of truth
 
-On the very first start (no registry state on disk), `federate-server` runs
-the seed exactly once:
+No TLD exists in compiled code. There is no hardcoded TLD list anywhere in
+runtime logic: official TLDs, delegated TLDs, reserved names, and blocked
+names are all ordinary TldRecords in the persistent registry (plus the
+external blocklist data files). Adding, updating, suspending, or removing a
+TLD never requires editing source code or recompiling anything.
 
-1. official TLDs are validated against the blocklists and root-signed;
-2. `sites/` is scanned, files are content-addressed, manifests are
-   owner-signed, domain records are operator-signed;
-3. seed delegated TLDs (`.femboy`) get their operator keys and registries;
-4. the assembled root zone is signed, self-verified, and adopted as the
-   initial persistent registry.
+## Explicit initialization and seeding
 
-On every later boot the persistent registry is the source of truth. `sites/`
-is never scanned again, seed constants are never consulted again, and
-changing the network means sending a signed mutation, not editing code.
+A brand new node bootstraps in explicit steps; the server never seeds TLDs
+on its own:
+
+```sh
+federate root init --data-dir .federate-server         # empty signed registry, ZERO TLDs
+federate root seed --file seeds/official-tlds.toml --data-dir .federate-server
+federate-server                                        # serves whatever the database holds
+federate publish package ./site --domain home.fed      # content arrives via ingest
+```
+
+`seeds/official-tlds.toml` is plain TOML data (`[[tlds]]` entries with
+`name`, `mode`, `purpose`). The seed command validates every name (naming
+rules + blocklists), creates root-signed TldRecords through the normal
+audited mutation path, and signs a new root zone version. Editing the seed
+file changes NOTHING until the command runs again, and the command refuses
+an already-populated registry; `--force` only adds missing entries, never
+overwrites existing records.
+
+If `federate-server` starts with no registry on disk, it initializes an
+EMPTY one (zero TLDs) and logs how to seed it. It never creates TLDs from
+code, on first boot or any other boot. TLDs can also be created on a
+running node with signed mutations:
+
+```sh
+federate tld create quintal --purpose "..." --key-dir <root-key-dir>
+federate tld reserve tesouro --reason "..." --key-dir <root-key-dir>
+federate tld block scam --reason "..." --key-dir <root-key-dir>
+federate tld delegate outra --owner <hex> --operator <hex> --key-dir <root-key-dir>
+```
 
 ## On-disk layout
 

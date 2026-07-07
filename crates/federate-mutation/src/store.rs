@@ -653,6 +653,90 @@ impl RegistryStore {
                 Ok(ActorRole::Root)
             }
 
+            MutationAction::CreateTld { tld, purpose } => {
+                if !is_root {
+                    return Err(FederateError::Unauthorized(
+                        "only the Federate Root Key can create official TLDs".into(),
+                    ));
+                }
+                // Official TLDs may use reserved names (e.g. .fed) but never
+                // public IANA / policy-blocked names.
+                let name = ctx.blocklists.validate_new_tld(tld, true)?;
+                if zone.tlds.contains_key(&name) {
+                    return Err(FederateError::MutationRejected(format!(
+                        ".{name} already exists in the registry"
+                    )));
+                }
+                let mut rec = TldRecord {
+                    tld: name.clone(),
+                    status: TldStatus::Official,
+                    mode: federate_naming::TldMode::Official,
+                    owner_public_key: ctx.root.node_id(),
+                    operator_public_key: ctx.official_operator.node_id(),
+                    operator_name: "Federate Network (root-managed)".into(),
+                    registry_type: RegistryType::RootManaged,
+                    registry_endpoint: None,
+                    registry_manifest_hash: None,
+                    registry_providers: Vec::new(),
+                    policy_hash: None,
+                    pricing: None,
+                    created_at: now.clone(),
+                    updated_at: now,
+                    expires_at: None,
+                    notes: Some(purpose.clone()),
+                    signature_algorithm: SIGNATURE_ALGORITHM.into(),
+                    signature: None,
+                };
+                rec.signature = Some(ctx.root.sign(&rec.signable_bytes()?));
+                zone.tlds.insert(name, rec);
+                Ok(ActorRole::Root)
+            }
+
+            MutationAction::ReserveTld { tld, reason }
+            | MutationAction::BlockTld { tld, reason } => {
+                if !is_root {
+                    return Err(FederateError::Unauthorized(
+                        "only the Federate Root Key can reserve or block TLDs".into(),
+                    ));
+                }
+                // Only naming rules here: reserving/blocking adds a
+                // restriction record, it never creates a resolvable TLD.
+                let name = federate_naming::validate_tld_name(tld)?;
+                if zone.tlds.contains_key(&name) {
+                    return Err(FederateError::MutationRejected(format!(
+                        ".{name} already exists in the registry; use tld.set_status"
+                    )));
+                }
+                let (status, mode) = if matches!(req.action, MutationAction::ReserveTld { .. }) {
+                    (TldStatus::Reserved, federate_naming::TldMode::Reserved)
+                } else {
+                    (TldStatus::Blocked, federate_naming::TldMode::Blocked)
+                };
+                let mut rec = TldRecord {
+                    tld: name.clone(),
+                    status,
+                    mode,
+                    owner_public_key: ctx.root.node_id(),
+                    operator_public_key: ctx.root.node_id(),
+                    operator_name: "Federate Network (root)".into(),
+                    registry_type: RegistryType::RootManaged,
+                    registry_endpoint: None,
+                    registry_manifest_hash: None,
+                    registry_providers: Vec::new(),
+                    policy_hash: None,
+                    pricing: None,
+                    created_at: now.clone(),
+                    updated_at: now,
+                    expires_at: None,
+                    notes: Some(reason.clone()),
+                    signature_algorithm: SIGNATURE_ALGORITHM.into(),
+                    signature: None,
+                };
+                rec.signature = Some(ctx.root.sign(&rec.signable_bytes()?));
+                zone.tlds.insert(name, rec);
+                Ok(ActorRole::Root)
+            }
+
             MutationAction::UpdateTld {
                 tld,
                 registry_endpoint,

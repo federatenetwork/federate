@@ -865,3 +865,272 @@ async fn published_package_resolves_over_native_protocol() {
         other => panic!("expected content, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// TLD source of truth: database only, seeded by explicit command, never by
+// code constants
+// ---------------------------------------------------------------------------
+
+const TEST_SEED: &str = r#"
+[[tlds]]
+name = "fedx"
+mode = "official"
+purpose = "Federate core namespace (test)"
+
+[[tlds]]
+name = "livros"
+mode = "official"
+purpose = "Books and reading (test)"
+
+[[tlds]]
+name = "cofre"
+mode = "reserved"
+reason = "kept for future infrastructure (test)"
+"#;
+
+#[test]
+fn registry_starts_empty_before_explicit_init() {
+    let fix = Fixture::new("empty-init");
+    assert!(
+        !RegistryStore::exists(&fix.registry_dir()),
+        "no registry exists before explicit init"
+    );
+    let store = crate::init_empty_registry(&fix.registry_dir(), &fix.root).unwrap();
+    assert!(RegistryStore::exists(&fix.registry_dir()));
+    assert!(store.zone().tlds.is_empty(), "init creates ZERO TLDs");
+    assert!(store.zone().domains.is_empty());
+    store.zone().verify(&fix.root.node_id()).unwrap();
+
+    // Init is explicit and single-shot: a second init refuses.
+    assert!(crate::init_empty_registry(&fix.registry_dir(), &fix.root).is_err());
+
+    // A restart of an un-seeded node keeps the registry empty: nothing
+    // recreates TLDs from code.
+    drop(store);
+    let store = RegistryStore::open(&fix.registry_dir(), &fix.root.node_id()).unwrap();
+    assert!(store.zone().tlds.is_empty(), "no auto-seed on restart");
+}
+
+#[test]
+fn seed_file_creates_official_tlds_via_audited_mutations() {
+    let fix = Fixture::new("seed-file");
+    let mut store = crate::init_empty_registry(&fix.registry_dir(), &fix.root).unwrap();
+    let seed = crate::SeedFile::parse(TEST_SEED).unwrap();
+    let before = store.zone().root_version;
+    let outcome = crate::apply_seed(&mut store, &seed, &fix.ctx(), false).unwrap();
+    assert_eq!(outcome.created, vec!["fedx", "livros", "cofre"]);
+
+    let rec = store
+        .zone()
+        .lookup_tld("fedx")
+        .expect("official TLD created");
+    assert_eq!(rec.status, TldStatus::Official);
+    assert_eq!(rec.registry_type, RegistryType::RootManaged);
+    rec.verify(&fix.root.node_id()).unwrap();
+
+    let reserved = store.zone().lookup_tld("cofre").unwrap();
+    assert_eq!(reserved.status, TldStatus::Reserved);
+    assert!(!reserved.status.is_resolvable());
+
+    assert!(
+        store.zone().root_version > before,
+        "seed signs new zone versions"
+    );
+    assert_eq!(store.audit_count(), 3, "one audit event per seeded TLD");
+    assert_eq!(
+        store.mutation_count(),
+        3,
+        "seed goes through the mutation path"
+    );
+}
+
+#[test]
+fn seed_refuses_populated_registry_and_force_only_adds_missing() {
+    let fix = Fixture::new("seed-force");
+    let mut store = crate::init_empty_registry(&fix.registry_dir(), &fix.root).unwrap();
+    let seed = crate::SeedFile::parse(TEST_SEED).unwrap();
+    crate::apply_seed(&mut store, &seed, &fix.ctx(), false).unwrap();
+
+    // Default: an already-populated registry is never re-seeded.
+    let err = crate::apply_seed(&mut store, &seed, &fix.ctx(), false).unwrap_err();
+    assert!(matches!(err, FederateError::MutationRejected(_)));
+
+    // Changing the seed file alone changes nothing (data, not authority):
+    // the registry keeps its records until a command runs.
+    let mut extended = crate::SeedFile::parse(TEST_SEED).unwrap();
+    extended.tlds.push(crate::SeedTld {
+        name: "novo".into(),
+        mode: "official".into(),
+        purpose: Some("added later (test)".into()),
+        reason: None,
+    });
+    assert!(store.zone().lookup_tld("novo").is_none());
+
+    // --force adds ONLY the missing entry; existing records are untouched.
+    let fedx_before = store.zone().lookup_tld("fedx").unwrap().clone();
+    let outcome = crate::apply_seed(&mut store, &extended, &fix.ctx(), true).unwrap();
+    assert_eq!(outcome.created, vec!["novo"]);
+    assert_eq!(outcome.skipped_existing.len(), 3);
+    assert_eq!(
+        store.zone().lookup_tld("fedx").unwrap().updated_at,
+        fedx_before.updated_at,
+        "force never overwrites existing records"
+    );
+}
+
+#[test]
+fn seeded_and_mutated_tlds_persist_across_restart() {
+    let fix = Fixture::new("seed-restart");
+    let mut store = crate::init_empty_registry(&fix.registry_dir(), &fix.root).unwrap();
+    let seed = crate::SeedFile::parse(TEST_SEED).unwrap();
+    crate::apply_seed(&mut store, &seed, &fix.ctx(), false).unwrap();
+
+    // One more TLD via a runtime signed mutation (the online path).
+    let req = fix.mutation(
+        &fix.root,
+        1,
+        MutationAction::CreateTld {
+            tld: "quintal".into(),
+            purpose: "runtime-created TLD (test)".into(),
+        },
+    );
+    store.apply(&req, &fix.ctx()).unwrap();
+    let version = store.zone().root_version;
+    drop(store);
+
+    // Restart: the database is the source of truth; nothing is recreated
+    // or overwritten from code.
+    let store = RegistryStore::open(&fix.registry_dir(), &fix.root.node_id()).unwrap();
+    assert_eq!(store.zone().root_version, version);
+    for tld in ["fedx", "livros", "cofre", "quintal"] {
+        assert!(
+            store.zone().lookup_tld(tld).is_some(),
+            ".{tld} survives restart"
+        );
+    }
+    assert_eq!(store.zone().tlds.len(), 4);
+}
+
+#[test]
+fn blocked_tlds_file_prevents_forbidden_tlds() {
+    let fix = Fixture::new("seed-blocked");
+    let mut store = crate::init_empty_registry(&fix.registry_dir(), &fix.root).unwrap();
+    let mut blocklists = Blocklists::default();
+    blocklists.iana.insert("com".into());
+    let ctx = MutationContext {
+        root: &fix.root,
+        official_operator: &fix.operator,
+        blocklists: &blocklists,
+        now: chrono::Utc::now(),
+    };
+
+    // Direct mutation rejected.
+    let req = fix.mutation(
+        &fix.root,
+        1,
+        MutationAction::CreateTld {
+            tld: "com".into(),
+            purpose: "collision attempt".into(),
+        },
+    );
+    assert!(matches!(
+        store.apply(&req, &ctx),
+        Err(FederateError::BlockedTld { .. })
+    ));
+
+    // Seed file containing a blocked name rejected too.
+    let seed = crate::SeedFile::parse(
+        "[[tlds]]\nname = \"com\"\nmode = \"official\"\npurpose = \"nope\"\n",
+    )
+    .unwrap();
+    assert!(crate::apply_seed(&mut store, &seed, &ctx, false).is_err());
+    assert!(store.zone().lookup_tld("com").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn newly_created_tld_resolves_natively_without_code_change() {
+    // The resolver (and therefore the gateway, which is a pure adapter on
+    // top of it) and the DNS zone gate all consume the served signed zone.
+    // A TLD created purely through database mutations must work end to end
+    // with no code or seed edits.
+    let fix = Fixture::new("new-tld-native");
+    let mut store = crate::init_empty_registry(&fix.registry_dir(), &fix.root).unwrap();
+
+    // TLD exists only as a database record created by a signed mutation.
+    let req = fix.mutation(
+        &fix.root,
+        1,
+        MutationAction::CreateTld {
+            tld: "pagina".into(),
+            purpose: "created at runtime (test)".into(),
+        },
+    );
+    store.apply(&req, &fix.ctx()).unwrap();
+    fix.publish(&mut store, "nova.pagina", "<p>tld from database</p>", 1)
+        .unwrap();
+
+    let root_key = fix.root.node_id();
+    let shared = std::sync::Arc::new(tokio::sync::RwLock::new(store));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(federate_transport::serve(
+        listener,
+        std::sync::Arc::new(TestNode(shared)),
+        "federate-mutation-test/0".into(),
+    ));
+
+    let client_dir = fix.dir.join("client");
+    std::fs::create_dir_all(&client_dir).unwrap();
+    let resolver = federate_resolution::Resolver::new(
+        federate_client::NodeClient::new("http://127.0.0.1:1"),
+        &client_dir,
+        Some(root_key),
+    )
+    .unwrap()
+    .with_native_providers(vec![addr.to_string()]);
+    let uri = federate_uri::FederateUri::parse("fed://nova.pagina/").unwrap();
+    match resolver.resolve_uri(&uri).await.unwrap() {
+        federate_resolution::Resolved::Content { bytes, .. } => {
+            assert_eq!(bytes, b"<p>tld from database</p>");
+        }
+        other => panic!("expected content, got {other:?}"),
+    }
+}
+
+#[test]
+fn no_hardcoded_tld_list_exists_in_runtime_code() {
+    // Source scan: FEDERATE_TLDS (and its membership helper) must not
+    // exist anywhere in the workspace. The TLD set is database state.
+    fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, hits);
+            } else if path.extension().and_then(|x| x.to_str()) == Some("rs") {
+                if path.ends_with("federate-mutation/src/tests.rs") {
+                    continue; // this file names the token in the scan itself
+                }
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                for token in [
+                    "FEDERATE_TLDS",
+                    "is_default_official_tld",
+                    "SEED_DELEGATED_TLDS",
+                ] {
+                    if content.contains(token) {
+                        hits.push(format!("{}: {token}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let mut hits = Vec::new();
+    scan(&crates_dir, &mut hits);
+    assert!(
+        hits.is_empty(),
+        "hardcoded TLD list tokens found in source: {hits:?}"
+    );
+}

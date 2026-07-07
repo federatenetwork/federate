@@ -114,6 +114,16 @@ pub enum MutationAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notes: Option<String>,
     },
+    /// Root creates an official, root-managed TLD. This is how the network's
+    /// TLD set is defined: through the database, never through code
+    /// constants (seed files feed this same action).
+    CreateTld { tld: String, purpose: String },
+    /// Root reserves a TLD name (record with status `reserved`, never
+    /// resolvable, blocks registration).
+    ReserveTld { tld: String, reason: String },
+    /// Root blocks a TLD name (record with status `blocked`, never
+    /// resolvable, blocks registration).
+    BlockTld { tld: String, reason: String },
     /// Root changes a TLD status (suspend a delegation, reinstate it, ...).
     SetTldStatus { tld: String, status: TldStatus },
     /// A delegated operator publishes a new signed registry; the root-signed
@@ -131,6 +141,9 @@ impl MutationAction {
             MutationAction::SetDomainStatus { .. } => "domain.set_status",
             MutationAction::IssueDomain { .. } => "domain.issue",
             MutationAction::DelegateTld { .. } => "tld.delegate",
+            MutationAction::CreateTld { .. } => "tld.create",
+            MutationAction::ReserveTld { .. } => "tld.reserve",
+            MutationAction::BlockTld { .. } => "tld.block",
             MutationAction::UpdateTld { .. } => "tld.update",
             MutationAction::SetTldStatus { .. } => "tld.set_status",
             MutationAction::UpdateRegistryPointer { .. } => "tld.update_registry_pointer",
@@ -150,6 +163,9 @@ impl MutationAction {
                 (TargetKind::Domain, record.domain.to_ascii_lowercase())
             }
             MutationAction::DelegateTld { tld, .. }
+            | MutationAction::CreateTld { tld, .. }
+            | MutationAction::ReserveTld { tld, .. }
+            | MutationAction::BlockTld { tld, .. }
             | MutationAction::UpdateTld { tld, .. }
             | MutationAction::SetTldStatus { tld, .. }
             | MutationAction::UpdateRegistryPointer { tld, .. } => {

@@ -141,10 +141,14 @@ mod tests {
 
     #[test]
     fn parses_every_official_tld_generically() {
-        // No TLD is special-cased: any syntactically valid label + TLD parses.
-        for (tld, _) in federate_naming::FEDERATE_TLDS {
+        // No TLD is special-cased: any syntactically valid label + TLD
+        // parses. Sample names mirror seeds/official-tlds.toml (test
+        // fixture only; the authoritative set is the signed root zone).
+        for tld in [
+            "fed", "busca", "pagina", "pages", "cara", "rosa", "mosca", "sound",
+        ] {
             let uri = FederateUri::parse(&format!("fed://site.{tld}")).unwrap();
-            assert_eq!(uri.domain.tld, *tld);
+            assert_eq!(uri.domain.tld, tld);
             assert_eq!(uri.path, "/");
         }
         // Unknown-but-valid TLDs parse too; existence is the root zone's call.

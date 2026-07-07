@@ -1,0 +1,133 @@
+# Official Federate TLD seed file.
+#
+# This is DATA, not code: nothing here takes effect until an operator runs
+#
+#   federate root seed --file seeds/official-tlds.toml --data-dir <node data dir>
+#
+# The command validates every name (naming rules + blocked_tlds.txt +
+# policy/brand-safety lists), creates root-signed TldRecords through the
+# normal audited mutation path, persists them in the registry database, and
+# signs a new root zone version. If the registry already holds TLDs the
+# command refuses; --force only ADDS missing entries, never overwrites.
+#
+# Modes: "official" (root-managed, resolvable), "reserved", "blocked".
+
+# Core namespaces
+[[tlds]]
+name = "fed"
+mode = "official"
+purpose = "Official Federate namespace: specs, protocol docs, registry, status, root info, governance, official tools."
+
+[[tlds]]
+name = "busca"
+mode = "official"
+purpose = "Federate search and discovery services (e.g. fed.busca). Official, root-managed."
+
+# People and communities
+[[tlds]]
+name = "pagina"
+mode = "official"
+purpose = "Personal sites, blogs, portfolios, small homepages, essays, public profiles (Portuguese namespace)."
+
+[[tlds]]
+name = "pages"
+mode = "official"
+purpose = "Personal sites, blogs, portfolios, small homepages, essays, public profiles (English namespace)."
+
+[[tlds]]
+name = "cara"
+mode = "official"
+purpose = "Identity, profiles, personal presence, people pages, creator pages, public cards."
+
+[[tlds]]
+name = "comu"
+mode = "official"
+purpose = "Communities, groups, collectives, clubs, shared spaces."
+
+[[tlds]]
+name = "oi"
+mode = "official"
+purpose = "Casual hellos, lightweight personal pages, contact cards."
+
+[[tlds]]
+name = "weblog"
+mode = "official"
+purpose = "Blogs, journals, diaries, running logs of any kind."
+
+# Creative
+[[tlds]]
+name = "rosa"
+mode = "official"
+purpose = "Creative, visual, poetic, aesthetic, soft, personal, art-oriented spaces."
+
+[[tlds]]
+name = "mosca"
+mode = "official"
+purpose = "Weird internet, experiments, memes, small games, odd projects, underground pages, strange communities."
+
+[[tlds]]
+name = "tipos"
+mode = "official"
+purpose = "Typography, type design, lettering, fonts, and written-form craft (Portuguese namespace)."
+
+[[tlds]]
+name = "types"
+mode = "official"
+purpose = "Typography, type design, lettering, fonts, and written-form craft (English namespace)."
+
+# Media
+[[tlds]]
+name = "foto"
+mode = "official"
+purpose = "Photography, photo essays, galleries (Portuguese namespace)."
+
+[[tlds]]
+name = "pic"
+mode = "official"
+purpose = "Images, illustration, visual snippets, galleries (English namespace)."
+
+[[tlds]]
+name = "vid"
+mode = "official"
+purpose = "Video pages, channels, screening rooms."
+
+[[tlds]]
+name = "sound"
+mode = "official"
+purpose = "Audio, music, sound art, radio, podcasts."
+
+[[tlds]]
+name = "records"
+mode = "official"
+purpose = "Music labels, discographies, archives, collections."
+
+# Colors: thematic creative/personal spaces
+[[tlds]]
+name = "amarelo"
+mode = "official"
+purpose = "Color namespace (yellow): thematic creative and personal spaces."
+
+[[tlds]]
+name = "azul"
+mode = "official"
+purpose = "Color namespace (blue): thematic creative and personal spaces."
+
+[[tlds]]
+name = "verde"
+mode = "official"
+purpose = "Color namespace (green): thematic creative and personal spaces."
+
+[[tlds]]
+name = "preto"
+mode = "official"
+purpose = "Color namespace (black): thematic creative and personal spaces."
+
+[[tlds]]
+name = "branco"
+mode = "official"
+purpose = "Color namespace (white): thematic creative and personal spaces."
+
+[[tlds]]
+name = "blau"
+mode = "official"
+purpose = "Color namespace (blue): thematic creative and personal spaces."
