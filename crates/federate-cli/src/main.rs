@@ -4,6 +4,8 @@
 //! signatures locally; the server is a distributor of signed data, not a
 //! trusted authority. Daemon commands talk to the local daemon API.
 
+mod localca;
+
 use clap::{Parser, Subcommand};
 use federate_core::{DaemonConfig, DEFAULT_API_ADDR, DEFAULT_BOOTSTRAP_URL};
 use federate_identity::NodeIdentity;
@@ -523,6 +525,11 @@ enum DnsCmd {
         /// Cache directory (defaults to a system path when run as a service)
         #[arg(long)]
         data_dir: Option<std::path::PathBuf>,
+        /// Serve Federate names locally: answer them with 127.0.0.1 and run
+        /// a verifying gateway on loopback 80 (http) + 443 (https, per-host
+        /// certificates minted by the local CA). Green lock for fed names.
+        #[arg(long)]
+        local_gateway: bool,
     },
     /// Install the local resolver as a system service and point system DNS
     /// at it (requires sudo/admin). Every TLD in the signed root zone
@@ -2613,6 +2620,47 @@ fn require_root(cmd: &str) {
     }
 }
 
+/// Pick a loopback IP whose port 53 is actually free. System resolver
+/// settings (resolv.conf, networksetup, NRPT) accept only an IP, never a
+/// port, so when something else already owns 127.0.0.1:53 (dnsmasq, a
+/// dev DNS, ...) the escape hatch is another address inside 127.0.0.0/8:
+/// all of it is loopback, and e.g. 127.53.0.1:53 binds fine while
+/// 127.0.0.1:53 is taken. Linux and Windows accept any 127.x bind
+/// natively; macOS needs an `ifconfig lo0 alias` first (we are root
+/// here, and the service plist re-aliases at boot).
+fn pick_dns_loopback() -> std::net::IpAddr {
+    let candidates: [std::net::Ipv4Addr; 4] = [
+        std::net::Ipv4Addr::new(127, 0, 0, 1),
+        std::net::Ipv4Addr::new(127, 53, 0, 1),
+        std::net::Ipv4Addr::new(127, 53, 0, 2),
+        std::net::Ipv4Addr::new(127, 53, 0, 3),
+    ];
+    for ip in candidates {
+        #[cfg(target_os = "macos")]
+        if ip.octets() != [127, 0, 0, 1] {
+            let ok = std::process::Command::new("ifconfig")
+                .args(["lo0", "alias", &ip.to_string(), "255.255.255.255"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                continue;
+            }
+        }
+        let udp = std::net::UdpSocket::bind((ip, 53));
+        let tcp = std::net::TcpListener::bind((ip, 53));
+        if udp.is_ok() && tcp.is_ok() {
+            if ip.octets() != [127, 0, 0, 1] {
+                println!("[..] 127.0.0.1:53 is taken by another service; using {ip}:53 instead");
+            }
+            return std::net::IpAddr::V4(ip);
+        }
+    }
+    die(
+        "port 53 is busy on every candidate loopback address; find the occupant with: sudo lsof -i :53",
+    );
+}
+
 #[cfg(target_os = "macos")]
 const MAC_DNS_PLIST: &str = "/Library/LaunchDaemons/network.federate.dns.plist";
 #[cfg(target_os = "macos")]
@@ -2637,24 +2685,25 @@ fn mac_network_services() -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn dns_install(cli: &Ctx) {
+fn dns_install(cli: &Ctx) -> std::net::IpAddr {
     require_root("dns install");
     let exe = dns_service_exe();
     std::fs::create_dir_all(MAC_DNS_DATA)
         .unwrap_or_else(|e| die(&format!("cannot create {MAC_DNS_DATA}: {e}")));
+    let ip = pick_dns_loopback();
 
-    // Service definition: keep the resolver alive across crashes and boots.
+    // Service definition: keep the resolver alive across crashes and
+    // boots. The /bin/sh wrapper re-creates the lo0 alias on every start:
+    // aliases do not survive reboot, and the service may be on a non-.1
+    // loopback address when 127.0.0.1:53 was taken at install time.
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
     <key>Label</key><string>network.federate.dns</string>
     <key>ProgramArguments</key><array>
-        <string>{exe}</string>
-        <string>--bootstrap</string><string>{bootstrap}</string>
-        <string>dns</string><string>proxy</string>
-        <string>--listen</string><string>127.0.0.1:53</string>
-        <string>--data-dir</string><string>{data}</string>
+        <string>/bin/sh</string><string>-c</string>
+        <string>/sbin/ifconfig lo0 alias {ip} 255.255.255.255 2>/dev/null; exec "{exe}" --bootstrap "{bootstrap}" dns proxy --listen {ip}:53 --data-dir "{data}" --local-gateway</string>
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -2696,7 +2745,7 @@ fn dns_install(cli: &Ctx) {
         };
         backup.push_str(&format!("{svc}\t{prev}\n"));
         let ok = std::process::Command::new("networksetup")
-            .args(["-setdnsservers", &svc, "127.0.0.1"])
+            .args(["-setdnsservers", &svc, &ip.to_string()])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -2713,8 +2762,9 @@ fn dns_install(cli: &Ctx) {
         .args(["-HUP", "mDNSResponder"])
         .status();
     println!("[ok] resolver service installed (launchd: network.federate.dns)");
-    println!("[ok] system DNS now 127.0.0.1; previous settings saved");
-    println!("try it: federate dns test home.fed --server 127.0.0.1:53");
+    println!("[ok] system DNS now {ip}; previous settings saved");
+    println!("try it: federate dns test home.fed --server {ip}:53");
+    ip
 }
 
 #[cfg(target_os = "macos")]
@@ -2800,16 +2850,22 @@ fn linux_resolved_active() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn dns_install(cli: &Ctx) {
+fn dns_install(cli: &Ctx) -> std::net::IpAddr {
     require_root("dns install");
     let exe = dns_service_exe();
     std::fs::create_dir_all(LINUX_DNS_DATA)
         .unwrap_or_else(|e| die(&format!("cannot create {LINUX_DNS_DATA}: {e}")));
+    // Stop a previous install first so its own port-53 bind does not make
+    // the picker think 127.0.0.1 is taken by a foreign service.
+    let _ = std::process::Command::new("systemctl")
+        .args(["stop", "federate-dns"])
+        .status();
+    let ip = pick_dns_loopback();
     let unit = format!(
         "[Unit]\nDescription=Federate local verifying DNS resolver\n\
          After=network-online.target\nWants=network-online.target\n\n\
          [Service]\nExecStart={exe} --bootstrap {bootstrap} dns proxy \
-         --listen 127.0.0.1:53 --data-dir {data}\nRestart=always\nRestartSec=2\n\n\
+         --listen {ip}:53 --data-dir {data} --local-gateway\nRestart=always\nRestartSec=2\n\n\
          [Install]\nWantedBy=multi-user.target\n",
         exe = exe.display(),
         bootstrap = cli.bootstrap,
@@ -2828,13 +2884,19 @@ fn dns_install(cli: &Ctx) {
     if !run(&["enable", "--now", "federate-dns"]) {
         die("systemctl enable --now federate-dns failed; run: journalctl -u federate-dns");
     }
+    // The service prints its bind errors to the journal; catch a crash
+    // loop HERE instead of letting the self-test time out 30s later.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    if !run(&["is-active", "--quiet", "federate-dns"]) {
+        die("federate-dns failed to start; run: journalctl -u federate-dns -n 20");
+    }
     if linux_resolved_active() {
         // Route ALL lookups through the proxy; it forwards non-Federate
         // names upstream, so normal resolution keeps working.
         std::fs::create_dir_all("/etc/systemd/resolved.conf.d").ok();
         std::fs::write(
             LINUX_RESOLVED_DROPIN,
-            "# installed by `federate dns install`\n[Resolve]\nDNS=127.0.0.1\nDomains=~.\n",
+            format!("# installed by `federate dns install`\n[Resolve]\nDNS={ip}\nDomains=~.\n"),
         )
         .unwrap_or_else(|e| die(&format!("cannot write {LINUX_RESOLVED_DROPIN}: {e}")));
         run(&["restart", "systemd-resolved"]);
@@ -2845,13 +2907,14 @@ fn dns_install(cli: &Ctx) {
         }
         std::fs::write(
             "/etc/resolv.conf",
-            "# installed by `federate dns install`\nnameserver 127.0.0.1\n",
+            format!("# installed by `federate dns install`\nnameserver {ip}\n"),
         )
         .unwrap_or_else(|e| die(&format!("cannot write /etc/resolv.conf: {e}")));
     }
     println!("[ok] resolver service installed (systemd: federate-dns)");
-    println!("[ok] system DNS now 127.0.0.1");
-    println!("try it: federate dns test home.fed --server 127.0.0.1:53");
+    println!("[ok] system DNS now {ip}");
+    println!("try it: federate dns test home.fed --server {ip}:53");
+    ip
 }
 
 #[cfg(target_os = "linux")]
@@ -2937,14 +3000,20 @@ fn require_admin(cmd: &str) {
 }
 
 #[cfg(target_os = "windows")]
-fn dns_install(cli: &Ctx) {
+fn dns_install(cli: &Ctx) -> std::net::IpAddr {
     require_admin("dns install");
     let exe = dns_service_exe();
     std::fs::create_dir_all(r"C:\ProgramData\Federate").ok();
+    // Stop a previous install first so its own port-53 bind does not make
+    // the picker think 127.0.0.1 is taken by a foreign service.
+    let _ = std::process::Command::new("schtasks")
+        .args(["/End", "/TN", WIN_DNS_TASK])
+        .status();
+    let ip = pick_dns_loopback();
     // Boot task running as SYSTEM keeps the resolver alive without a full
     // Windows service wrapper.
     let action = format!(
-        "\"{}\" --bootstrap {} dns proxy --listen 127.0.0.1:53 --data-dir C:\\ProgramData\\Federate\\dns-proxy",
+        "\"{}\" --bootstrap {} dns proxy --listen {ip}:53 --data-dir C:\\ProgramData\\Federate\\dns-proxy --local-gateway",
         exe.display(),
         cli.bootstrap
     );
@@ -2987,7 +3056,7 @@ fn dns_install(cli: &Ctx) {
         .args([
             "-NoProfile",
             "-Command",
-            "Get-NetAdapter -Physical | Where-Object Status -eq Up | Set-DnsClientServerAddress -ServerAddresses 127.0.0.1",
+            &format!("Get-NetAdapter -Physical | Where-Object Status -eq Up | Set-DnsClientServerAddress -ServerAddresses {ip}"),
         ])
         .status()
         .map(|s| s.success())
@@ -2999,8 +3068,9 @@ fn dns_install(cli: &Ctx) {
         .arg("/flushdns")
         .status();
     println!("[ok] resolver task installed ({WIN_DNS_TASK})");
-    println!("[ok] system DNS now 127.0.0.1; previous settings saved");
-    println!("try it: federate dns test home.fed --server 127.0.0.1:53");
+    println!("[ok] system DNS now {ip}; previous settings saved");
+    println!("try it: federate dns test home.fed --server {ip}:53");
+    ip
 }
 
 #[cfg(target_os = "windows")]
@@ -3081,7 +3151,7 @@ fn dns_status() {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn dns_install(_cli: &Ctx) {
+fn dns_install(_cli: &Ctx) -> std::net::IpAddr {
     die("federate dns install is not supported on this OS yet");
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -3097,12 +3167,28 @@ fn dns_status() {
 // setup: one command, whole machine on the network
 // ---------------------------------------------------------------------------
 
-/// resolver service + system DNS + fed:// handler + live self-test.
+/// local CA + resolver service + system DNS + fed:// handler + live
+/// self-test.
 async fn setup_cmd(cli: &Ctx) {
-    println!("== 1/3 local resolver + system DNS ==");
-    dns_install(cli);
+    println!("== 1/4 local certificate authority (https for fed names) ==");
+    let ca_dir = localca::ca_dir();
+    match localca::LocalCa::load_or_create(&ca_dir) {
+        Ok(_) => match localca::trust_install(&ca_dir) {
+            Ok(()) => println!(
+                "[ok] local CA trusted by this machine (key never leaves it: {})",
+                ca_dir.join(localca::CA_KEY_FILE).display()
+            ),
+            Err(e) => {
+                eprintln!("[!!] CA created but not trusted ({e}); https will warn until fixed")
+            }
+        },
+        Err(e) => eprintln!("[!!] no local CA ({e}); fed names stay http-only"),
+    }
 
-    println!("== 2/3 fed:// link handler ==");
+    println!("== 2/4 local resolver + system DNS ==");
+    let dns_ip = dns_install(cli);
+
+    println!("== 3/4 fed:// link handler ==");
     // dns install runs under sudo; the handler must belong to the real
     // user (per-user app bundle / registry hive), so drop back to them.
     #[cfg(unix)]
@@ -3125,16 +3211,16 @@ async fn setup_cmd(cli: &Ctx) {
     #[cfg(not(unix))]
     handler_cmd(HandlerCmd::Install);
 
-    println!("== 3/3 self-test ==");
-    setup_selftest().await;
+    println!("== 4/4 self-test ==");
+    setup_selftest(dns_ip).await;
 }
 
-/// Query the local resolver for `name`; Some(ips) means the signed root
-/// zone covers it (any TLD, present or future).
-async fn local_resolve(name: &str) -> Option<Vec<std::net::IpAddr>> {
+/// Query the local resolver at `server` for `name`; Some(ips) means the
+/// signed root zone covers it (any TLD, present or future).
+async fn local_resolve(name: &str, server: std::net::IpAddr) -> Option<Vec<std::net::IpAddr>> {
     use federate_dns::wire;
     let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
-    socket.connect("127.0.0.1:53").await.ok()?;
+    socket.connect((server, 53)).await.ok()?;
     let query = wire::build_query(0x1a2b, name, 1);
     socket.send(&query).await.ok()?;
     let mut buf = [0u8; 512];
@@ -3155,7 +3241,7 @@ async fn local_resolve(name: &str) -> Option<Vec<std::net::IpAddr>> {
 /// With the proxy live we can detect them dynamically: any hosts name the
 /// signed root zone resolves is stale by definition. Remove those (backup
 /// kept), touch nothing else.
-async fn setup_clean_hosts() {
+async fn setup_clean_hosts(dns_ip: std::net::IpAddr) {
     let path = if cfg!(windows) {
         std::path::PathBuf::from(r"C:\Windows\System32\drivers\etc\hosts")
     } else {
@@ -3173,7 +3259,7 @@ async fn setup_clean_hosts() {
         let mut stale = false;
         if is_mapping {
             for name in fields {
-                if local_resolve(name).await.is_some() {
+                if local_resolve(name, dns_ip).await.is_some() {
                     stale = true;
                     break;
                 }
@@ -3228,21 +3314,23 @@ async fn setup_clean_hosts() {
 /// Prove the machine is actually on the network: resolve home.fed against
 /// the local resolver (retrying while the service warms up), then fetch the
 /// page from a resolved gateway.
-async fn setup_selftest() {
+async fn setup_selftest(dns_ip: std::net::IpAddr) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut ips: Vec<std::net::IpAddr> = Vec::new();
     while std::time::Instant::now() < deadline {
-        if let Some(answers) = local_resolve("home.fed").await {
+        if let Some(answers) = local_resolve("home.fed", dns_ip).await {
             ips = answers;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
     if ips.is_empty() {
-        die("[!!] home.fed did not resolve through 127.0.0.1:53 within 30s; check: federate dns status");
+        die(&format!(
+            "[!!] home.fed did not resolve through {dns_ip}:53 within 30s; check: federate dns status"
+        ));
     }
     println!("[ok] home.fed resolves -> {ips:?}");
-    setup_clean_hosts().await;
+    setup_clean_hosts(dns_ip).await;
     let url = format!("http://{}/", ips[0]);
     match http()
         .get(&url)
@@ -3254,12 +3342,69 @@ async fn setup_selftest() {
         Ok(r) if r.status().is_success() => {
             let bytes = r.bytes().await.map(|b| b.len()).unwrap_or(0);
             println!("[ok] home.fed served {bytes} bytes through a gateway");
-            println!();
-            println!("done. open http://home.fed in your browser.");
         }
         Ok(r) => die(&format!("[!!] gateway answered {}", r.status())),
         Err(e) => die(&format!("[!!] gateway fetch failed: {e}")),
     }
+    match tls_selftest("home.fed", ips[0]).await {
+        Ok(()) => {
+            println!("[ok] https://home.fed handshake verified against the local CA");
+            println!();
+            println!("done. open https://home.fed in your browser.");
+        }
+        Err(e) => {
+            eprintln!("[..] https not verified ({e}); http://home.fed still works");
+            println!();
+            println!("done. open http://home.fed in your browser.");
+        }
+    }
+}
+
+/// Handshake with the loopback gateway exactly like a browser would:
+/// SNI `name`, chain must verify against the local CA.
+async fn tls_selftest(name: &str, gateway_ip: std::net::IpAddr) -> Result<(), String> {
+    let ca_pem = std::fs::read_to_string(localca::ca_dir().join(localca::CA_CERT_FILE))
+        .map_err(|e| format!("no local CA: {e}"))?;
+    let ca_der = {
+        use base64::Engine as _;
+        let body: String = ca_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("");
+        base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .map_err(|e| format!("bad CA pem: {e}"))?
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls_pki_types::CertificateDer::from(ca_der))
+        .map_err(|e| format!("CA rejected: {e}"))?;
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("tls config: {e}"))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect((gateway_ip, 443)),
+    )
+    .await
+    .map_err(|_| "connect timeout".to_string())?
+    .map_err(|e| format!("connect: {e}"))?;
+    let server_name = rustls_pki_types::ServerName::try_from(name.to_string())
+        .map_err(|e| format!("bad name: {e}"))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        connector.connect(server_name, stream),
+    )
+    .await
+    .map_err(|_| "handshake timeout".to_string())?
+    .map_err(|e| format!("handshake: {e}"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3554,9 +3699,15 @@ async fn dns_cmd(cli: &Ctx, cmd: DnsCmd) {
             upstream,
             root_key,
             data_dir,
-        } => dns_proxy(cli, listen, upstream, root_key, data_dir).await,
-        DnsCmd::Install => dns_install(cli),
-        DnsCmd::Uninstall => dns_uninstall(),
+            local_gateway,
+        } => dns_proxy(cli, listen, upstream, root_key, data_dir, local_gateway).await,
+        DnsCmd::Install => {
+            dns_install(cli);
+        }
+        DnsCmd::Uninstall => {
+            dns_uninstall();
+            localca::trust_uninstall(&localca::ca_dir());
+        }
         DnsCmd::Status => dns_status(),
     }
 }
@@ -3572,6 +3723,7 @@ async fn dns_proxy(
     upstream: std::net::SocketAddr,
     root_key: Option<String>,
     data_dir: Option<std::path::PathBuf>,
+    local_gateway: bool,
 ) {
     let data_dir = data_dir.unwrap_or_else(|| DaemonConfig::default_data_dir().join("dns-proxy"));
     std::fs::create_dir_all(&data_dir)
@@ -3582,7 +3734,11 @@ async fn dns_proxy(
             &data_dir,
             root_key,
         )
-        .unwrap_or_else(|e| die(&format!("cannot initialize resolver: {e}"))),
+        .unwrap_or_else(|e| die(&format!("cannot initialize resolver: {e}")))
+        .with_directory(
+            federate_directory::DirectoryClient::new(&cli.bootstrap),
+            None,
+        ),
     );
     match resolver.refresh_root().await {
         Ok(zone) => eprintln!(
@@ -3592,15 +3748,160 @@ async fn dns_proxy(
         ),
         Err(e) => eprintln!("[..] root zone not loaded yet: {e} (will retry)"),
     }
-    let server = federate_dns::DnsServer::new(
+
+    // Loopback gateway: serve Federate names on this machine over http(80)
+    // and https(443, local-CA certs). Only if both ports bind do we answer
+    // Federate DNS with 127.0.0.1; otherwise fall back to remote gateways.
+    // The gateway lives on the same loopback IP as the resolver (which
+    // may be e.g. 127.53.0.1 when 127.0.0.1:53 was taken at install
+    // time), so DNS answers, http, and https all agree on one address.
+    let mut fixed_answers: Vec<std::net::IpAddr> = Vec::new();
+    if local_gateway {
+        let gw_ip = listen.ip();
+        match local_gateway_listeners(
+            resolver.clone(),
+            &localca::ca_dir(),
+            &format!("{gw_ip}:80"),
+            &format!("{gw_ip}:443"),
+        )
+        .await
+        {
+            Ok((http_addr, https_addr)) => {
+                fixed_answers.push(gw_ip);
+                eprintln!("[ok] local gateway on {http_addr} (http) + {https_addr} (https)");
+            }
+            Err(e) => {
+                eprintln!("[!!] local gateway disabled ({e}); answering with remote gateways");
+            }
+        }
+    }
+
+    let server = federate_dns::DnsServer::with_fixed_answers(
         resolver,
         federate_directory::DirectoryClient::new(&cli.bootstrap),
         upstream,
+        fixed_answers,
     );
     eprintln!("[ok] federate dns proxy on {listen} (upstream {upstream})");
     if let Err(e) = server.run(listen).await {
-        die(&format!("dns proxy failed: {e}"));
+        die(&format!(
+            "dns proxy failed: {e}\n\
+             if this is 'Address in use', something else owns {listen}\n\
+             (find it: sudo lsof -i :{port}); rerun `sudo federate dns install`,\n\
+             which picks a free loopback address automatically",
+            port = listen.port()
+        ));
     }
+}
+
+/// Per-SNI certificate minting for the loopback gateway: the rustls
+/// resolver asks the local CA for a leaf the first time each Federate
+/// name is opened over https.
+#[derive(Debug)]
+struct LocalSniCerts {
+    ca: std::sync::Arc<localca::LocalCa>,
+    keys: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<rustls::sign::CertifiedKey>>,
+    >,
+}
+
+impl rustls::server::ResolvesServerCert for LocalSniCerts {
+    fn resolve(
+        &self,
+        client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        let name = client_hello.server_name()?.to_string();
+        if let Some(hit) = self.keys.lock().expect("sni cache lock").get(&name) {
+            return Some(hit.clone());
+        }
+        let leaf = self.ca.leaf_for(&name).ok()?;
+        let ca_der = self.ca.ca_der().ok()?;
+        let chain = vec![
+            rustls_pki_types::CertificateDer::from(leaf.cert_der),
+            rustls_pki_types::CertificateDer::from(ca_der),
+        ];
+        let key = rustls::crypto::ring::sign::any_supported_type(
+            &rustls_pki_types::PrivateKeyDer::Pkcs8(leaf.key_der.into()),
+        )
+        .ok()?;
+        let certified = std::sync::Arc::new(rustls::sign::CertifiedKey::new(chain, key));
+        self.keys
+            .lock()
+            .expect("sni cache lock")
+            .insert(name, certified.clone());
+        Some(certified)
+    }
+}
+
+/// Bind and spawn the loopback gateway listeners (production: http 80,
+/// https 443). Returns the bound addresses; errors bubble up so the
+/// caller can fall back to remote gateways.
+async fn local_gateway_listeners(
+    resolver: std::sync::Arc<federate_resolution::Resolver>,
+    ca_dir: &std::path::Path,
+    http_addr: &str,
+    https_addr: &str,
+) -> Result<(std::net::SocketAddr, std::net::SocketAddr), String> {
+    let ca = std::sync::Arc::new(
+        localca::LocalCa::load_or_create(ca_dir).map_err(|e| format!("local CA: {e}"))?,
+    );
+    let http = tokio::net::TcpListener::bind(http_addr)
+        .await
+        .map_err(|e| format!("cannot bind {http_addr}: {e}"))?;
+    let https = tokio::net::TcpListener::bind(https_addr)
+        .await
+        .map_err(|e| format!("cannot bind {https_addr}: {e}"))?;
+    let bound = (
+        http.local_addr().map_err(|e| e.to_string())?,
+        https.local_addr().map_err(|e| e.to_string())?,
+    );
+
+    let router = federate_gateway::router(resolver);
+
+    // http: plain axum. Browsers typing bare names land here first.
+    {
+        let router = router.clone();
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(http, router).await {
+                eprintln!("[!!] loopback http gateway failed: {e}");
+            }
+        });
+    }
+
+    // https: rustls with per-SNI local-CA certs, then the same router.
+    let mut tls_config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("tls config: {e}"))?
+    .with_no_client_auth()
+    .with_cert_resolver(std::sync::Arc::new(LocalSniCerts {
+        ca,
+        keys: std::sync::Mutex::new(std::collections::HashMap::new()),
+    }));
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config));
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _peer)) = https.accept().await else {
+                continue;
+            };
+            let acceptor = acceptor.clone();
+            let router = router.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(stream).await else {
+                    return; // bad handshake (unknown SNI, scanner, ...)
+                };
+                let service = hyper_util::service::TowerToHyperService::new(router);
+                let _ = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection_with_upgrades(hyper_util::rt::TokioIo::new(tls), service)
+                .await;
+            });
+        }
+    });
+    Ok(bound)
 }
 
 async fn gateway_test(domain: &str, gateway: &str) {
@@ -3807,5 +4108,77 @@ async fn doctor(cli: &Ctx) {
     } else {
         println!("{problems} problem(s) found. See docs/en-US/troubleshooting.md");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod local_gateway_tests {
+    use super::*;
+
+    /// End-to-end loopback TLS: the gateway mints a certificate for the
+    /// SNI name on the fly and a client trusting only the local CA
+    /// completes the handshake, exactly like a browser will.
+    #[tokio::test]
+    async fn https_handshake_with_minted_sni_cert() {
+        let dir = std::env::temp_dir().join(format!("fed-lgw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolver = std::sync::Arc::new(
+            federate_resolution::Resolver::new(
+                federate_client::NodeClient::new("http://127.0.0.1:1"),
+                &dir,
+                None,
+            )
+            .unwrap(),
+        );
+        let ca_dir = dir.join("ca");
+        let (http_addr, https_addr) =
+            local_gateway_listeners(resolver, &ca_dir, "127.0.0.1:0", "127.0.0.1:0")
+                .await
+                .expect("listeners bind");
+
+        // http side answers (content resolution fails offline, but the
+        // gateway must answer HTTP, not hang).
+        let resp = http()
+            .get(format!("http://{http_addr}/"))
+            .header("Host", "home.fed")
+            .send()
+            .await
+            .expect("http gateway reachable");
+        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+
+        // https side: handshake with SNI home.fed against the local CA.
+        let ca_pem = std::fs::read_to_string(ca_dir.join(localca::CA_CERT_FILE)).unwrap();
+        let body: String = ca_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("");
+        use base64::Engine as _;
+        let ca_der = base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls_pki_types::CertificateDer::from(ca_der))
+            .unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+        let stream = tokio::net::TcpStream::connect(https_addr).await.unwrap();
+        let name = rustls_pki_types::ServerName::try_from("home.fed".to_string()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connector.connect(name, stream),
+        )
+        .await
+        .expect("handshake within 5s")
+        .expect("browser-grade handshake against the local CA");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

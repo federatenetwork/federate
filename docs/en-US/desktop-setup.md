@@ -20,21 +20,34 @@ iex (irm https://federate.network/install.ps1)
 ```
 
 The installer downloads the `federate` CLI and runs `federate setup`,
-which does three things and then proves they work:
+which does four things and then proves they work:
 
-1. **Local verifying resolver as a system service.** `federate dns proxy`
-   runs on `127.0.0.1:53` (launchd on macOS, systemd on Linux, a SYSTEM
-   boot task on Windows). It answers names under every TLD in the
-   **signed root zone**, which it refreshes continuously against the
-   pinned root key. There is no TLD list on the client: a TLD created
-   tomorrow resolves on every installed machine within a minute. Every
-   non-Federate name is forwarded to upstream DNS untouched.
-2. **System DNS pointed at the resolver.** Previous DNS settings are
-   saved and restored exactly by `federate dns uninstall`.
-3. **`fed://` links registered** to open in your browser (see below).
+1. **Local certificate authority, mkcert-style.** Public CAs cannot
+   issue for `.fed`, so setup generates a CA on YOUR machine (the
+   private key is created there and never leaves it; a shared
+   network-wide CA could impersonate any HTTPS site and is therefore
+   never used) and adds its public certificate to the system trust
+   store. Result: `https://home.fed` with a green lock.
+2. **Local verifying resolver + gateway as a system service.**
+   `federate dns proxy --local-gateway` runs on `127.0.0.1:53` (launchd
+   on macOS, systemd on Linux, a SYSTEM boot task on Windows). It
+   answers names under every TLD in the **signed root zone**, which it
+   refreshes continuously against the pinned root key; there is no TLD
+   list on the client, so a TLD created tomorrow resolves on every
+   installed machine within a minute. Federate names point at a
+   loopback gateway (http 80 + https 443) that fetches content over the
+   Federate protocol and verifies the full signature/hash chain on your
+   machine before serving a single byte; per-name certificates are
+   minted by the local CA on first use. Every non-Federate name is
+   forwarded to upstream DNS untouched.
+3. **System DNS pointed at the resolver.** Previous DNS settings are
+   saved and restored exactly by `federate dns uninstall` (which also
+   removes the CA from the trust store).
+4. **`fed://` links registered** to open in your browser (see below).
 
-Self-test at the end: `home.fed` must resolve through `127.0.0.1:53` and
-fetch through a live gateway, or setup fails loudly.
+Self-test at the end: `home.fed` must resolve through `127.0.0.1:53`,
+fetch through the gateway, and complete a TLS handshake verified against
+the local CA, or setup says exactly which step failed.
 
 Manage it later:
 
@@ -43,6 +56,12 @@ federate dns status          # service + system DNS state
 sudo federate dns uninstall  # restore previous DNS, remove the service
 sudo federate setup          # do everything again
 ```
+
+Already running something on port 53 (dnsmasq, a dev DNS)? The installer
+detects that and moves to another loopback address automatically
+(`127.53.0.1:53` and so on; system DNS settings accept only an IP, so
+the escape hatch is an address inside 127.0.0.0/8, never a port). Your
+existing service is not touched.
 
 Why this beats a hosts file: nothing is hardcoded, new TLDs and new
 domains appear automatically, answers carry multiple healthy gateways

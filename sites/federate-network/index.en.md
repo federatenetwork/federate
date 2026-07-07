@@ -21,8 +21,10 @@ iex (irm https://federate.network/install.ps1)
 
 This installs the `federate` CLI, starts a local verifying resolver
 (every Federate TLD, present and future, answered from the signed root
-zone), points your system DNS at it, makes `fed://` links clickable,
-and self-tests. Undo anytime: `sudo federate dns uninstall`.
+zone), serves Federate pages from your own machine with **https and a
+green lock** (local certificate authority, key never leaves your
+device), makes `fed://` links clickable, and self-tests. Undo anytime:
+`sudo federate dns uninstall`.
 
 **iPhone or iPad instead?**
 

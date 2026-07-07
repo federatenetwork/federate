@@ -54,6 +54,11 @@ pub struct DnsServer {
     pub ttl: u32,
     /// Healthy gateway IPs, refreshed in the background from the directory.
     gateways: RwLock<Vec<IpAddr>>,
+    /// When set, Federate names are answered with exactly these IPs
+    /// instead of directory gateways. Used by the local resolver service,
+    /// which serves the content itself on loopback (with local TLS); which
+    /// names are Federate still comes from the signed root zone.
+    fixed_answers: Vec<IpAddr>,
 }
 
 impl DnsServer {
@@ -62,12 +67,24 @@ impl DnsServer {
         directory: DirectoryClient,
         upstream: SocketAddr,
     ) -> Arc<Self> {
+        Self::with_fixed_answers(resolver, directory, upstream, Vec::new())
+    }
+
+    /// A server that answers Federate names with `fixed` (e.g. 127.0.0.1
+    /// for a loopback gateway) instead of directory gateway IPs.
+    pub fn with_fixed_answers(
+        resolver: Arc<Resolver>,
+        directory: DirectoryClient,
+        upstream: SocketAddr,
+        fixed: Vec<IpAddr>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             resolver,
             directory,
             upstream,
             ttl: DEFAULT_TTL_SECS,
             gateways: RwLock::new(Vec::new()),
+            fixed_answers: fixed,
         })
     }
 
@@ -225,8 +242,13 @@ impl DnsServer {
         let query = DnsQuery::parse(packet).ok()?;
 
         if self.is_federate_name(&query.name).await {
-            // Answer with multiple healthy gateway IPs, low TTL.
-            let ips = self.gateway_ips().await;
+            // Answer with multiple healthy gateway IPs, low TTL (or the
+            // fixed override for loopback-gateway deployments).
+            let ips = if self.fixed_answers.is_empty() {
+                self.gateway_ips().await
+            } else {
+                self.fixed_answers.clone()
+            };
             let (v4, v6): (Vec<IpAddr>, Vec<IpAddr>) = ips.into_iter().partition(|ip| ip.is_ipv4());
             let mut answers = match query.qtype {
                 QueryType::A => v4,

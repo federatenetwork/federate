@@ -35,3 +35,13 @@ rand = { workspace = true }
 federate-registry = { workspace = true }
 chrono = { workspace = true }
 walkdir = { workspace = true }
+federate-gateway = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+rustls-pki-types = { workspace = true }
