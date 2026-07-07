@@ -5,17 +5,32 @@
 Federate names like `home.fed` do not exist in the old internet's phone
 book. One setting fixes that, and the normal web keeps working.
 
-## 1. Turn on Federate DNS (once)
+## 1. One command and you are in (Mac, Linux, Windows)
 
-Pick ONE path:
+**Mac or Linux** - paste in a terminal:
 
-**iPhone or Mac (recommended, covers the whole device)**
+```
+curl -fsSL https://federate.network/install.sh | bash
+```
+
+**Windows** - paste in PowerShell:
+
+```
+iex (irm https://federate.network/install.ps1)
+```
+
+This installs the `federate` CLI, starts a local verifying resolver
+(every Federate TLD, present and future, answered from the signed root
+zone), points your system DNS at it, makes `fed://` links clickable,
+and self-tests. Undo anytime: `sudo federate dns uninstall`.
+
+**iPhone or iPad instead?**
 
 1. [Download the DNS profile](/federate-dns.mobileconfig)
 2. Open the downloaded file
 3. Settings → General → Device Management → **Install**
 
-**Browser only (30 seconds)**
+**Just a browser, no install (30 seconds)**
 
 Chrome, Edge, or Firefox → Settings → **Secure DNS** → custom provider →
 paste:
@@ -43,14 +58,10 @@ applied yet (restart the browser).
 federate publish package ./my-site --domain you.pagina
 ```
 
-- **Make fed:// links clickable** - after building the CLI (below), run
-  `federate handler install` once and addresses like `fed://home.fed`
-  open in your browser.
-- **Use the command line** - the native way to browse:
+- **Use the command line** - the installer from step 1 already gave you
+  the native way to browse:
 
 ```
-git clone https://github.com/c3b/federatenetwork
-cargo build --release -p federate-cli
 federate fetch fed://home.fed/
 ```
 

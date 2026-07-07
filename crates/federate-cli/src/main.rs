@@ -145,6 +145,9 @@ enum Cmd {
     },
     /// Open a Federate domain in the default browser (portless URL)
     Open { domain: String },
+    /// One-shot machine setup: resolver service + system DNS + fed://
+    /// handler, then a live self-test (requires sudo/admin)
+    Setup,
     /// Show local node identity
     Identity,
     /// Check whether port 80 can be bound
@@ -503,6 +506,32 @@ enum DnsCmd {
         #[arg(long, default_value = "127.0.0.1:5353")]
         server: String,
     },
+    /// Run the local verifying resolver (Federate TLDs answered from the
+    /// signed root zone, refreshed continuously; everything else forwarded
+    /// to upstream DNS). This is what `federate dns install` runs as a
+    /// system service.
+    Proxy {
+        /// Listen address (system service uses 127.0.0.1:53)
+        #[arg(long, default_value = "127.0.0.1:53")]
+        listen: std::net::SocketAddr,
+        /// Upstream DNS for non-Federate names
+        #[arg(long, default_value = federate_dns::DEFAULT_UPSTREAM)]
+        upstream: std::net::SocketAddr,
+        /// Pinned Federate Root public key (hex)
+        #[arg(long)]
+        root_key: Option<String>,
+        /// Cache directory (defaults to a system path when run as a service)
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
+    },
+    /// Install the local resolver as a system service and point system DNS
+    /// at it (requires sudo/admin). Every TLD in the signed root zone
+    /// resolves on this machine, including TLDs created in the future.
+    Install,
+    /// Remove the resolver service and restore previous system DNS
+    Uninstall,
+    /// Show resolver service + system DNS state
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -869,9 +898,7 @@ async fn main() {
             }
         }
         Cmd::Node { cmd } => node_cmd(&cli, cmd).await,
-        Cmd::Dns {
-            cmd: DnsCmd::Test { domain, server },
-        } => dns_test(&domain, &server).await,
+        Cmd::Dns { cmd } => dns_cmd(&cli, cmd).await,
         Cmd::Gateway {
             cmd: GatewayCmd::Test { domain, gateway },
         } => gateway_test(&domain, &gateway).await,
@@ -885,6 +912,7 @@ async fn main() {
         Cmd::Registry { cmd } => registry_cmd(&cli, cmd).await,
         Cmd::Mutation { cmd } => mutation_cmd(&cli, cmd).await,
         Cmd::Handler { cmd } => handler_cmd(cmd),
+        Cmd::Setup => setup_cmd(&cli).await,
         Cmd::Open { domain } => {
             // Accepts fed://... and bare domains; opens the browser through
             // the HTTP compatibility gateway (portless URL). This runs as a
@@ -2558,6 +2586,683 @@ fn handler_status() {
 }
 
 // ---------------------------------------------------------------------------
+// dns install: local verifying resolver as a system service
+//
+// The service runs `federate dns proxy` on 127.0.0.1:53 and system DNS is
+// pointed at loopback. The proxy carries NO TLD list: it answers from the
+// signed root zone it refreshes continuously, so TLDs created after
+// installation resolve everywhere with zero client changes.
+// ---------------------------------------------------------------------------
+
+fn dns_service_exe() -> std::path::PathBuf {
+    std::env::current_exe()
+        .unwrap_or_else(|e| die(&format!("cannot locate the federate binary: {e}")))
+}
+
+#[cfg(unix)]
+fn require_root(cmd: &str) {
+    let euid = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if euid != "0" {
+        die(&format!(
+            "this changes system DNS; run: sudo federate {cmd}"
+        ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+const MAC_DNS_PLIST: &str = "/Library/LaunchDaemons/network.federate.dns.plist";
+#[cfg(target_os = "macos")]
+const MAC_DNS_BACKUP: &str = "/Library/Application Support/Federate/dns-backup.tsv";
+#[cfg(target_os = "macos")]
+const MAC_DNS_DATA: &str = "/Library/Application Support/Federate/dns-proxy";
+
+/// Enabled network services ("Wi-Fi", "Ethernet", ...); disabled ones are
+/// listed with a `*` prefix and skipped.
+#[cfg(target_os = "macos")]
+fn mac_network_services() -> Vec<String> {
+    let out = std::process::Command::new("networksetup")
+        .arg("-listallnetworkservices")
+        .output()
+        .unwrap_or_else(|e| die(&format!("cannot run networksetup: {e}")));
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .skip(1) // header line
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('*'))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn dns_install(cli: &Ctx) {
+    require_root("dns install");
+    let exe = dns_service_exe();
+    std::fs::create_dir_all(MAC_DNS_DATA)
+        .unwrap_or_else(|e| die(&format!("cannot create {MAC_DNS_DATA}: {e}")));
+
+    // Service definition: keep the resolver alive across crashes and boots.
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>network.federate.dns</string>
+    <key>ProgramArguments</key><array>
+        <string>{exe}</string>
+        <string>--bootstrap</string><string>{bootstrap}</string>
+        <string>dns</string><string>proxy</string>
+        <string>--listen</string><string>127.0.0.1:53</string>
+        <string>--data-dir</string><string>{data}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardErrorPath</key><string>/Library/Logs/federate-dns.log</string>
+</dict></plist>
+"#,
+        exe = exe.display(),
+        bootstrap = cli.bootstrap,
+        data = MAC_DNS_DATA,
+    );
+    std::fs::write(MAC_DNS_PLIST, plist)
+        .unwrap_or_else(|e| die(&format!("cannot write {MAC_DNS_PLIST}: {e}")));
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", "system/network.federate.dns"])
+        .output();
+    let ok = std::process::Command::new("launchctl")
+        .args(["bootstrap", "system", MAC_DNS_PLIST])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        die("launchctl bootstrap failed; see /Library/Logs/federate-dns.log");
+    }
+
+    // Point every enabled network service at loopback, saving what was
+    // there so uninstall can restore it exactly.
+    let mut backup = String::new();
+    for svc in mac_network_services() {
+        let prev = std::process::Command::new("networksetup")
+            .args(["-getdnsservers", &svc])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().replace('\n', " "))
+            .unwrap_or_default();
+        // "There aren't any..." means DHCP-assigned; restore as "Empty".
+        let prev = if prev.contains("aren't any") || prev.is_empty() {
+            "Empty".to_string()
+        } else {
+            prev
+        };
+        backup.push_str(&format!("{svc}\t{prev}\n"));
+        let ok = std::process::Command::new("networksetup")
+            .args(["-setdnsservers", &svc, "127.0.0.1"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("[!!] could not set DNS for service {svc}");
+        }
+    }
+    std::fs::write(MAC_DNS_BACKUP, backup)
+        .unwrap_or_else(|e| die(&format!("cannot write {MAC_DNS_BACKUP}: {e}")));
+    let _ = std::process::Command::new("dscacheutil")
+        .arg("-flushcache")
+        .status();
+    let _ = std::process::Command::new("killall")
+        .args(["-HUP", "mDNSResponder"])
+        .status();
+    println!("[ok] resolver service installed (launchd: network.federate.dns)");
+    println!("[ok] system DNS now 127.0.0.1; previous settings saved");
+    println!("try it: federate dns test home.fed --server 127.0.0.1:53");
+}
+
+#[cfg(target_os = "macos")]
+fn dns_uninstall() {
+    require_root("dns uninstall");
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", "system/network.federate.dns"])
+        .output();
+    let _ = std::fs::remove_file(MAC_DNS_PLIST);
+    if let Ok(backup) = std::fs::read_to_string(MAC_DNS_BACKUP) {
+        for line in backup.lines() {
+            let Some((svc, prev)) = line.split_once('\t') else {
+                continue;
+            };
+            let mut args = vec!["-setdnsservers", svc];
+            args.extend(prev.split_whitespace());
+            let _ = std::process::Command::new("networksetup")
+                .args(&args)
+                .status();
+        }
+        let _ = std::fs::remove_file(MAC_DNS_BACKUP);
+    } else {
+        // No backup: fall back to DHCP-assigned DNS everywhere.
+        for svc in mac_network_services() {
+            let _ = std::process::Command::new("networksetup")
+                .args(["-setdnsservers", &svc, "Empty"])
+                .status();
+        }
+    }
+    let _ = std::process::Command::new("dscacheutil")
+        .arg("-flushcache")
+        .status();
+    let _ = std::process::Command::new("killall")
+        .args(["-HUP", "mDNSResponder"])
+        .status();
+    println!("[ok] resolver service removed, previous DNS restored");
+}
+
+#[cfg(target_os = "macos")]
+fn dns_status() {
+    let service = std::process::Command::new("launchctl")
+        .args(["print", "system/network.federate.dns"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    println!(
+        "resolver service : {}",
+        if service {
+            "[ok] running"
+        } else {
+            "NOT running"
+        }
+    );
+    for svc in mac_network_services() {
+        let dns = std::process::Command::new("networksetup")
+            .args(["-getdnsservers", &svc])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().replace('\n', " "))
+            .unwrap_or_default();
+        println!("system DNS ({svc}): {dns}");
+    }
+    if !service {
+        println!("run: sudo federate dns install");
+    }
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_DNS_UNIT: &str = "/etc/systemd/system/federate-dns.service";
+#[cfg(target_os = "linux")]
+const LINUX_RESOLVED_DROPIN: &str = "/etc/systemd/resolved.conf.d/federate.conf";
+#[cfg(target_os = "linux")]
+const LINUX_RESOLV_BACKUP: &str = "/var/lib/federate/resolv.conf.bak";
+#[cfg(target_os = "linux")]
+const LINUX_DNS_DATA: &str = "/var/lib/federate/dns-proxy";
+
+#[cfg(target_os = "linux")]
+fn linux_resolved_active() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "systemd-resolved"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn dns_install(cli: &Ctx) {
+    require_root("dns install");
+    let exe = dns_service_exe();
+    std::fs::create_dir_all(LINUX_DNS_DATA)
+        .unwrap_or_else(|e| die(&format!("cannot create {LINUX_DNS_DATA}: {e}")));
+    let unit = format!(
+        "[Unit]\nDescription=Federate local verifying DNS resolver\n\
+         After=network-online.target\nWants=network-online.target\n\n\
+         [Service]\nExecStart={exe} --bootstrap {bootstrap} dns proxy \
+         --listen 127.0.0.1:53 --data-dir {data}\nRestart=always\nRestartSec=2\n\n\
+         [Install]\nWantedBy=multi-user.target\n",
+        exe = exe.display(),
+        bootstrap = cli.bootstrap,
+        data = LINUX_DNS_DATA,
+    );
+    std::fs::write(LINUX_DNS_UNIT, unit)
+        .unwrap_or_else(|e| die(&format!("cannot write {LINUX_DNS_UNIT}: {e}")));
+    let run = |args: &[&str]| {
+        std::process::Command::new("systemctl")
+            .args(args)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    run(&["daemon-reload"]);
+    if !run(&["enable", "--now", "federate-dns"]) {
+        die("systemctl enable --now federate-dns failed; run: journalctl -u federate-dns");
+    }
+    if linux_resolved_active() {
+        // Route ALL lookups through the proxy; it forwards non-Federate
+        // names upstream, so normal resolution keeps working.
+        std::fs::create_dir_all("/etc/systemd/resolved.conf.d").ok();
+        std::fs::write(
+            LINUX_RESOLVED_DROPIN,
+            "# installed by `federate dns install`\n[Resolve]\nDNS=127.0.0.1\nDomains=~.\n",
+        )
+        .unwrap_or_else(|e| die(&format!("cannot write {LINUX_RESOLVED_DROPIN}: {e}")));
+        run(&["restart", "systemd-resolved"]);
+    } else {
+        std::fs::create_dir_all("/var/lib/federate").ok();
+        if let Ok(cur) = std::fs::read("/etc/resolv.conf") {
+            std::fs::write(LINUX_RESOLV_BACKUP, cur).ok();
+        }
+        std::fs::write(
+            "/etc/resolv.conf",
+            "# installed by `federate dns install`\nnameserver 127.0.0.1\n",
+        )
+        .unwrap_or_else(|e| die(&format!("cannot write /etc/resolv.conf: {e}")));
+    }
+    println!("[ok] resolver service installed (systemd: federate-dns)");
+    println!("[ok] system DNS now 127.0.0.1");
+    println!("try it: federate dns test home.fed --server 127.0.0.1:53");
+}
+
+#[cfg(target_os = "linux")]
+fn dns_uninstall() {
+    require_root("dns uninstall");
+    let _ = std::process::Command::new("systemctl")
+        .args(["disable", "--now", "federate-dns"])
+        .status();
+    let _ = std::fs::remove_file(LINUX_DNS_UNIT);
+    let _ = std::process::Command::new("systemctl")
+        .args(["daemon-reload"])
+        .status();
+    if std::path::Path::new(LINUX_RESOLVED_DROPIN).exists() {
+        let _ = std::fs::remove_file(LINUX_RESOLVED_DROPIN);
+        let _ = std::process::Command::new("systemctl")
+            .args(["restart", "systemd-resolved"])
+            .status();
+    }
+    if let Ok(prev) = std::fs::read(LINUX_RESOLV_BACKUP) {
+        std::fs::write("/etc/resolv.conf", prev).ok();
+        let _ = std::fs::remove_file(LINUX_RESOLV_BACKUP);
+    }
+    println!("[ok] resolver service removed, previous DNS restored");
+}
+
+#[cfg(target_os = "linux")]
+fn dns_status() {
+    let service = std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "federate-dns"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    println!(
+        "resolver service : {}",
+        if service {
+            "[ok] running"
+        } else {
+            "NOT running"
+        }
+    );
+    if linux_resolved_active() {
+        println!(
+            "systemd-resolved : drop-in {}",
+            if std::path::Path::new(LINUX_RESOLVED_DROPIN).exists() {
+                "[ok] installed"
+            } else {
+                "NOT installed"
+            }
+        );
+    } else if let Ok(conf) = std::fs::read_to_string("/etc/resolv.conf") {
+        println!(
+            "/etc/resolv.conf : {}",
+            if conf.contains("nameserver 127.0.0.1") {
+                "[ok] points at 127.0.0.1"
+            } else {
+                "does NOT point at 127.0.0.1"
+            }
+        );
+    }
+    if !service {
+        println!("run: sudo federate dns install");
+    }
+}
+
+#[cfg(target_os = "windows")]
+const WIN_DNS_TASK: &str = "Federate DNS Proxy";
+#[cfg(target_os = "windows")]
+const WIN_DNS_BACKUP: &str = r"C:\ProgramData\Federate\dns-backup.txt";
+
+#[cfg(target_os = "windows")]
+fn require_admin(cmd: &str) {
+    // `net session` succeeds only in an elevated shell.
+    let admin = std::process::Command::new("net")
+        .arg("session")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !admin {
+        die(&format!(
+            "this changes system DNS; run `federate {cmd}` from an Administrator terminal"
+        ));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn dns_install(cli: &Ctx) {
+    require_admin("dns install");
+    let exe = dns_service_exe();
+    std::fs::create_dir_all(r"C:\ProgramData\Federate").ok();
+    // Boot task running as SYSTEM keeps the resolver alive without a full
+    // Windows service wrapper.
+    let action = format!(
+        "\"{}\" --bootstrap {} dns proxy --listen 127.0.0.1:53 --data-dir C:\\ProgramData\\Federate\\dns-proxy",
+        exe.display(),
+        cli.bootstrap
+    );
+    let ok = std::process::Command::new("schtasks")
+        .args([
+            "/Create",
+            "/TN",
+            WIN_DNS_TASK,
+            "/SC",
+            "ONSTART",
+            "/RU",
+            "SYSTEM",
+            "/RL",
+            "HIGHEST",
+            "/TR",
+            &action,
+            "/F",
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        die("schtasks /Create failed");
+    }
+    let _ = std::process::Command::new("schtasks")
+        .args(["/Run", "/TN", WIN_DNS_TASK])
+        .status();
+    // Save current per-interface DNS, then point everything at loopback.
+    let backup = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-DnsClientServerAddress -AddressFamily IPv4 | ForEach-Object { \"$($_.InterfaceIndex)`t$($_.ServerAddresses -join ',')\" }",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    std::fs::write(WIN_DNS_BACKUP, &backup).ok();
+    let ok = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-NetAdapter -Physical | Where-Object Status -eq Up | Set-DnsClientServerAddress -ServerAddresses 127.0.0.1",
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        die("Set-DnsClientServerAddress failed");
+    }
+    let _ = std::process::Command::new("ipconfig")
+        .arg("/flushdns")
+        .status();
+    println!("[ok] resolver task installed ({WIN_DNS_TASK})");
+    println!("[ok] system DNS now 127.0.0.1; previous settings saved");
+    println!("try it: federate dns test home.fed --server 127.0.0.1:53");
+}
+
+#[cfg(target_os = "windows")]
+fn dns_uninstall() {
+    require_admin("dns uninstall");
+    let _ = std::process::Command::new("schtasks")
+        .args(["/End", "/TN", WIN_DNS_TASK])
+        .status();
+    let _ = std::process::Command::new("schtasks")
+        .args(["/Delete", "/TN", WIN_DNS_TASK, "/F"])
+        .status();
+    let restored = std::fs::read_to_string(WIN_DNS_BACKUP)
+        .map(|backup| {
+            for line in backup.lines() {
+                let Some((idx, servers)) = line.split_once('\t') else {
+                    continue;
+                };
+                let cmd = if servers.trim().is_empty() {
+                    format!(
+                        "Set-DnsClientServerAddress -InterfaceIndex {idx} -ResetServerAddresses"
+                    )
+                } else {
+                    format!(
+                        "Set-DnsClientServerAddress -InterfaceIndex {idx} -ServerAddresses {servers}"
+                    )
+                };
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &cmd])
+                    .status();
+            }
+            true
+        })
+        .unwrap_or(false);
+    if !restored {
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetAdapter -Physical | Set-DnsClientServerAddress -ResetServerAddresses",
+            ])
+            .status();
+    }
+    let _ = std::fs::remove_file(WIN_DNS_BACKUP);
+    let _ = std::process::Command::new("ipconfig")
+        .arg("/flushdns")
+        .status();
+    println!("[ok] resolver task removed, previous DNS restored");
+}
+
+#[cfg(target_os = "windows")]
+fn dns_status() {
+    let task = std::process::Command::new("schtasks")
+        .args(["/Query", "/TN", WIN_DNS_TASK])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    println!(
+        "resolver task : {}",
+        if task {
+            "[ok] installed"
+        } else {
+            "NOT installed"
+        }
+    );
+    let dns = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object -ExpandProperty ServerAddresses) -join ' '",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    println!("system DNS    : {dns}");
+    if !task {
+        println!("run from an Administrator terminal: federate dns install");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn dns_install(_cli: &Ctx) {
+    die("federate dns install is not supported on this OS yet");
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn dns_uninstall() {
+    die("federate dns install is not supported on this OS yet");
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn dns_status() {
+    die("federate dns install is not supported on this OS yet");
+}
+
+// ---------------------------------------------------------------------------
+// setup: one command, whole machine on the network
+// ---------------------------------------------------------------------------
+
+/// resolver service + system DNS + fed:// handler + live self-test.
+async fn setup_cmd(cli: &Ctx) {
+    println!("== 1/3 local resolver + system DNS ==");
+    dns_install(cli);
+
+    println!("== 2/3 fed:// link handler ==");
+    // dns install runs under sudo; the handler must belong to the real
+    // user (per-user app bundle / registry hive), so drop back to them.
+    #[cfg(unix)]
+    {
+        match std::env::var("SUDO_USER") {
+            Ok(user) if user != "root" => {
+                let exe = dns_service_exe();
+                let ok = std::process::Command::new("sudo")
+                    .args(["-u", &user, &exe.to_string_lossy(), "handler", "install"])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !ok {
+                    eprintln!("[!!] handler install failed; run later: federate handler install");
+                }
+            }
+            _ => handler_cmd(HandlerCmd::Install),
+        }
+    }
+    #[cfg(not(unix))]
+    handler_cmd(HandlerCmd::Install);
+
+    println!("== 3/3 self-test ==");
+    setup_selftest().await;
+}
+
+/// Query the local resolver for `name`; Some(ips) means the signed root
+/// zone covers it (any TLD, present or future).
+async fn local_resolve(name: &str) -> Option<Vec<std::net::IpAddr>> {
+    use federate_dns::wire;
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    socket.connect("127.0.0.1:53").await.ok()?;
+    let query = wire::build_query(0x1a2b, name, 1);
+    socket.send(&query).await.ok()?;
+    let mut buf = [0u8; 512];
+    let len = tokio::time::timeout(std::time::Duration::from_secs(2), socket.recv(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    match wire::parse_answers(&buf[..len]) {
+        Ok((0, answers)) if !answers.is_empty() => {
+            Some(answers.into_iter().map(|(ip, _)| ip).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Hosts-file entries always beat DNS, so a manual mapping left over from
+/// the old hosts-file era silently shadows the resolver service forever.
+/// With the proxy live we can detect them dynamically: any hosts name the
+/// signed root zone resolves is stale by definition. Remove those (backup
+/// kept), touch nothing else.
+async fn setup_clean_hosts() {
+    let path = if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\Windows\System32\drivers\etc\hosts")
+    } else {
+        std::path::PathBuf::from("/etc/hosts")
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let mut kept = Vec::new();
+    let mut removed = Vec::new();
+    for line in content.lines() {
+        let entry = line.split('#').next().unwrap_or("");
+        let mut fields = entry.split_whitespace();
+        let is_mapping = fields.next().is_some();
+        let mut stale = false;
+        if is_mapping {
+            for name in fields {
+                if local_resolve(name).await.is_some() {
+                    stale = true;
+                    break;
+                }
+            }
+        }
+        if stale {
+            removed.push(line.to_string());
+        } else {
+            kept.push(line.to_string());
+        }
+    }
+    if removed.is_empty() {
+        return;
+    }
+    let backup = path.with_extension("federate-backup");
+    if std::fs::write(&backup, &content).is_err() {
+        eprintln!(
+            "[!!] cannot back up {}; leaving it untouched",
+            path.display()
+        );
+        return;
+    }
+    let mut new_content = kept.join("\n");
+    new_content.push('\n');
+    if std::fs::write(&path, new_content).is_err() {
+        eprintln!(
+            "[!!] cannot rewrite {}; stale entries remain:",
+            path.display()
+        );
+        for line in &removed {
+            eprintln!("     {line}");
+        }
+        return;
+    }
+    println!(
+        "[ok] removed {} stale hosts-file entr{} shadowing the resolver (backup: {})",
+        removed.len(),
+        if removed.len() == 1 { "y" } else { "ies" },
+        backup.display()
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("dscacheutil")
+            .arg("-flushcache")
+            .status();
+        let _ = std::process::Command::new("killall")
+            .args(["-HUP", "mDNSResponder"])
+            .status();
+    }
+}
+
+/// Prove the machine is actually on the network: resolve home.fed against
+/// the local resolver (retrying while the service warms up), then fetch the
+/// page from a resolved gateway.
+async fn setup_selftest() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut ips: Vec<std::net::IpAddr> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        if let Some(answers) = local_resolve("home.fed").await {
+            ips = answers;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    if ips.is_empty() {
+        die("[!!] home.fed did not resolve through 127.0.0.1:53 within 30s; check: federate dns status");
+    }
+    println!("[ok] home.fed resolves -> {ips:?}");
+    setup_clean_hosts().await;
+    let url = format!("http://{}/", ips[0]);
+    match http()
+        .get(&url)
+        .header("Host", "home.fed")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            let bytes = r.bytes().await.map(|b| b.len()).unwrap_or(0);
+            println!("[ok] home.fed served {bytes} bytes through a gateway");
+            println!();
+            println!("done. open http://home.fed in your browser.");
+        }
+        Ok(r) => die(&format!("[!!] gateway answered {}", r.status())),
+        Err(e) => die(&format!("[!!] gateway fetch failed: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // manifest / keys
 // ---------------------------------------------------------------------------
 
@@ -2838,6 +3543,63 @@ async fn dns_test(domain: &str, server: &str) {
             "[!!] DNS node answered rcode {rcode} (2=SERVFAIL, 3=NXDOMAIN)"
         )),
         Err(e) => die(&format!("[!!] cannot parse DNS response: {}", e.0)),
+    }
+}
+
+async fn dns_cmd(cli: &Ctx, cmd: DnsCmd) {
+    match cmd {
+        DnsCmd::Test { domain, server } => dns_test(&domain, &server).await,
+        DnsCmd::Proxy {
+            listen,
+            upstream,
+            root_key,
+            data_dir,
+        } => dns_proxy(cli, listen, upstream, root_key, data_dir).await,
+        DnsCmd::Install => dns_install(cli),
+        DnsCmd::Uninstall => dns_uninstall(),
+        DnsCmd::Status => dns_status(),
+    }
+}
+
+/// Local verifying resolver: the same engine the public DNS nodes run, bound
+/// to loopback. Names under any TLD in the *signed* root zone are answered
+/// with healthy gateway IPs; the TLD set refreshes continuously, so TLDs
+/// created after installation resolve with no client change. Every other
+/// name is forwarded to upstream DNS untouched.
+async fn dns_proxy(
+    cli: &Ctx,
+    listen: std::net::SocketAddr,
+    upstream: std::net::SocketAddr,
+    root_key: Option<String>,
+    data_dir: Option<std::path::PathBuf>,
+) {
+    let data_dir = data_dir.unwrap_or_else(|| DaemonConfig::default_data_dir().join("dns-proxy"));
+    std::fs::create_dir_all(&data_dir)
+        .unwrap_or_else(|e| die(&format!("cannot create {}: {e}", data_dir.display())));
+    let resolver = std::sync::Arc::new(
+        federate_resolution::Resolver::new(
+            federate_client::NodeClient::new(&cli.bootstrap),
+            &data_dir,
+            root_key,
+        )
+        .unwrap_or_else(|e| die(&format!("cannot initialize resolver: {e}"))),
+    );
+    match resolver.refresh_root().await {
+        Ok(zone) => eprintln!(
+            "[ok] verified root zone v{}: {} TLDs",
+            zone.root_version,
+            zone.tlds.len()
+        ),
+        Err(e) => eprintln!("[..] root zone not loaded yet: {e} (will retry)"),
+    }
+    let server = federate_dns::DnsServer::new(
+        resolver,
+        federate_directory::DirectoryClient::new(&cli.bootstrap),
+        upstream,
+    );
+    eprintln!("[ok] federate dns proxy on {listen} (upstream {upstream})");
+    if let Err(e) = server.run(listen).await {
+        die(&format!("dns proxy failed: {e}"));
     }
 }
 

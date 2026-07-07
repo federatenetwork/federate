@@ -5,17 +5,32 @@
 Nomes Federate como `home.fed` não existem na lista telefônica da internet
 antiga. Uma configuração resolve isso, e a web normal continua funcionando.
 
-## 1. Ligue o DNS da Federate (uma vez)
+## 1. Um comando e você está dentro (Mac, Linux, Windows)
 
-Escolha UM caminho:
+**Mac ou Linux** - cole no terminal:
 
-**iPhone ou Mac (recomendado, vale para o aparelho inteiro)**
+```
+curl -fsSL https://federate.network/install.sh | bash
+```
+
+**Windows** - cole no PowerShell:
+
+```
+iex (irm https://federate.network/install.ps1)
+```
+
+Isso instala a CLI `federate`, sobe um resolvedor local verificador
+(todo TLD da Federate, atual e futuro, respondido a partir da zona raiz
+assinada), aponta o DNS do sistema para ele, torna links `fed://`
+clicáveis e roda um teste ao vivo. Desfazer: `sudo federate dns uninstall`.
+
+**iPhone ou iPad?**
 
 1. [Baixe o perfil de DNS](/federate-dns.mobileconfig)
 2. Abra o arquivo baixado
 3. Ajustes → Geral → Gerenciamento de Dispositivo → **Instalar**
 
-**Só o navegador (30 segundos)**
+**Só o navegador, sem instalar nada (30 segundos)**
 
 Chrome, Edge ou Firefox → Configurações → **DNS seguro** → provedor
 personalizado → cole:
@@ -44,14 +59,10 @@ foi aplicado (feche e abra o navegador).
 federate publish package ./meu-site --domain voce.pagina
 ```
 
-- **Torne links fed:// clicáveis** - depois de compilar a CLI (abaixo),
-  rode `federate handler install` uma vez e endereços como
-  `fed://home.fed` passam a abrir no navegador.
-- **Use a linha de comando** - o jeito nativo de navegar:
+- **Use a linha de comando** - o instalador do passo 1 já te deu o jeito
+  nativo de navegar:
 
 ```
-git clone https://github.com/c3b/federatenetwork
-cargo build --release -p federate-cli
 federate fetch fed://home.fed/
 ```
 
