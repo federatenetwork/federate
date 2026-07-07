@@ -1,23 +1,28 @@
 //! The persistent Federate Root Registry: durable signed state plus the
 //! only code path that mutates it.
 //!
-//! Layout under the registry directory (all JSON, house style: atomic
-//! write-to-tmp-then-rename, signatures re-verified on load, fail closed):
+//! Layout under the registry directory:
 //!
 //! ```text
 //! registry/
-//!   state.json        current signed root zone + delegated registries +
-//!                     per-target versions (the source of truth)
+//!   registry.redb     the authoritative embedded database (tld_records,
+//!                     domain_records, root_zone_versions, mutations,
+//!                     audit_events, snapshots, nonces, registry_metadata,
+//!                     delegated_registries, target_versions)
 //!   manifests/<hash>  content-addressed manifest / registry bytes
 //!   blocks/           content-addressed site blocks (federate-storage)
-//!   audit.jsonl       append-only signed audit log (one event per line)
-//!   mutations.jsonl   append-only accepted-mutation history
-//!   snapshots/        root-zone-v<version>.json, one per accepted version
+//!   snapshots/        root-zone-v<version>.json, human-inspectable copies
 //! ```
 //!
-//! Private keys are NEVER stored in any of these records.
+//! Every accepted mutation commits in ONE database transaction: it either
+//! fully applies or does not apply at all, and a crash mid-mutation leaves
+//! the previous state intact (redb ACID). Signatures are re-verified on
+//! every load, fail closed. Private keys are NEVER stored in the database
+//! or any record; they stay in their own 0600 identity.key files.
 
 use crate::audit::AuditRecord;
+use crate::backend::{CommitBatch, InitialState, RegistryBackend, SnapshotMeta};
+use crate::redb_backend::RedbRegistryStore;
 use crate::request::{ActorRole, MutationAction, MutationRequest};
 use federate_core::{FederateError, Result};
 use federate_identity::NodeIdentity;
@@ -44,7 +49,7 @@ pub struct MutationContext<'a> {
     pub now: chrono::DateTime<chrono::Utc>,
 }
 
-/// One accepted mutation, as recorded in mutations.jsonl.
+/// One accepted mutation, as recorded in the mutations table.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppliedMutation {
     pub mutation: MutationRequest,
@@ -53,18 +58,10 @@ pub struct AppliedMutation {
     pub root_version: u64,
 }
 
-/// Durable snapshot format of state.json.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PersistedState {
-    zone: RootZone,
-    /// tld -> exact signed registry JSON bytes, hex-encoded
-    registries: BTreeMap<String, String>,
-    /// target key ("domain:x.y" | "tld:z") -> last accepted mutation version
-    target_versions: BTreeMap<String, u64>,
-}
-
 pub struct RegistryStore {
     dir: PathBuf,
+    /// The embedded database: authoritative durable store.
+    backend: Box<dyn RegistryBackend>,
     zone: RootZone,
     /// tld -> (exact signed bytes, parsed registry)
     registries: BTreeMap<String, (Vec<u8>, TldRegistry)>,
@@ -77,9 +74,10 @@ pub struct RegistryStore {
 }
 
 impl RegistryStore {
-    /// True when persistent registry state already exists (seed must not run).
+    /// True when persistent registry state already exists in ANY format
+    /// (redb database or a legacy JSON layout awaiting migration).
     pub fn exists(dir: &Path) -> bool {
-        dir.join("state.json").is_file()
+        RedbRegistryStore::db_path(dir).is_file() || crate::legacy_json::exists(dir)
     }
 
     /// First boot: adopt the seeded state as the initial persistent registry.
@@ -96,8 +94,28 @@ impl RegistryStore {
         for (hash, bytes) in &blocks {
             block_store.put(hash, bytes)?;
         }
+        let backend = RedbRegistryStore::create(dir)?;
+        let zone_json = serde_json::to_vec(&zone)?;
+        let hash = state_hash(&zone)?;
+        backend.commit_initial(&InitialState {
+            zone_json,
+            root_version: zone.root_version,
+            state_hash: hash.clone(),
+            tlds: zone.tlds.values().cloned().collect(),
+            domains: zone.domains.values().cloned().collect(),
+            delegated_registries: registries
+                .iter()
+                .map(|(tld, (bytes, _))| (tld.clone(), bytes.clone()))
+                .collect(),
+            snapshot: SnapshotMeta {
+                root_version: zone.root_version,
+                created_at: zone.generated_at.clone(),
+                state_hash: hash,
+            },
+        })?;
         let mut store = RegistryStore {
             dir: dir.to_path_buf(),
+            backend: Box::new(backend),
             zone,
             registries,
             manifests: BTreeMap::new(),
@@ -109,7 +127,6 @@ impl RegistryStore {
         for (hash, bytes) in manifests {
             store.write_manifest(&hash, &bytes)?;
         }
-        store.persist_state()?;
         store.write_snapshot()?;
         Ok(store)
     }
@@ -118,19 +135,47 @@ impl RegistryStore {
     /// truth. Everything is re-verified against the pinned root key; a
     /// tampered state file stops the node instead of serving forged data.
     pub fn open(dir: &Path, expected_root_key: &str) -> Result<Self> {
-        let state_path = dir.join("state.json");
-        let bytes = std::fs::read(&state_path)?;
-        let state: PersistedState = serde_json::from_slice(&bytes)?;
-        state.zone.validate()?;
-        state.zone.verify(expected_root_key)?;
+        if !RedbRegistryStore::db_path(dir).is_file() {
+            if crate::legacy_json::exists(dir) {
+                return Err(FederateError::Storage(format!(
+                    "legacy JSON registry found at {}; migrate it with: \
+                     federate registry migrate-json-to-redb --data-dir <node data dir>",
+                    dir.display()
+                )));
+            }
+            return Err(FederateError::Storage(format!(
+                "no registry database at {}",
+                RedbRegistryStore::db_path(dir).display()
+            )));
+        }
+        let backend = RedbRegistryStore::open(dir)?;
+
+        // The signed zone is the authority; verify it against the pinned
+        // root key AND against the stored state hash before serving.
+        let (version, zone_json) = backend
+            .current_root_zone()?
+            .ok_or_else(|| FederateError::Storage("database has no current root zone".into()))?;
+        let zone: RootZone = serde_json::from_slice(&zone_json)?;
+        zone.validate()?;
+        zone.verify(expected_root_key)?;
+        if zone.root_version != version {
+            return Err(FederateError::InvalidRoot(format!(
+                "current zone claims v{} but metadata points at v{version}",
+                zone.root_version
+            )));
+        }
+        if let Some(stored_hash) = backend.get_meta("state_hash")? {
+            if stored_hash != state_hash(&zone)? {
+                return Err(FederateError::InvalidRoot(
+                    "stored state hash does not match the current zone".into(),
+                ));
+            }
+        }
 
         let mut registries = BTreeMap::new();
-        for (tld, hex_bytes) in state.registries {
-            let raw = hex::decode(&hex_bytes).map_err(|_| {
-                FederateError::InvalidRoot(format!("persisted .{tld} registry is not hex"))
-            })?;
+        for (tld, raw) in backend.list_delegated_registries()? {
             let parsed: TldRegistry = serde_json::from_slice(&raw)?;
-            let record = state.zone.lookup_tld(&tld).ok_or_else(|| {
+            let record = zone.lookup_tld(&tld).ok_or_else(|| {
                 FederateError::InvalidRoot(format!(
                     "persisted registry for .{tld} has no TLD record in the zone"
                 ))
@@ -156,30 +201,22 @@ impl RegistryStore {
             }
         }
 
-        let mut applied = BTreeMap::new();
-        for line in read_lines(&dir.join("mutations.jsonl"))? {
-            match serde_json::from_str::<AppliedMutation>(&line) {
-                Ok(m) => {
-                    applied.insert(m.mutation.mutation_id.clone(), m);
-                }
-                Err(e) => tracing::warn!("skipping unreadable mutation history line: {e}"),
-            }
-        }
-        let mut audit = Vec::new();
-        for line in read_lines(&dir.join("audit.jsonl"))? {
-            match serde_json::from_str::<AuditRecord>(&line) {
-                Ok(a) => audit.push(a),
-                Err(e) => tracing::warn!("skipping unreadable audit line: {e}"),
-            }
-        }
+        let applied = backend
+            .list_mutations()?
+            .into_iter()
+            .map(|m| (m.mutation.mutation_id.clone(), m))
+            .collect();
+        let audit = backend.list_audit_events()?;
+        let target_versions = backend.list_target_versions()?.into_iter().collect();
 
         Ok(RegistryStore {
             dir: dir.to_path_buf(),
-            zone: state.zone,
+            backend: Box::new(backend),
+            zone,
             registries,
             manifests,
             blocks: BlockStore::new(dir)?,
-            target_versions: state.target_versions,
+            target_versions,
             applied,
             audit,
         })
@@ -245,6 +282,26 @@ impl RegistryStore {
         self.audit.len()
     }
 
+    /// All accepted mutations (inspection/migration tooling).
+    pub fn mutations_list(&self) -> Vec<AppliedMutation> {
+        self.applied.values().cloned().collect()
+    }
+
+    /// Full in-memory audit log (inspection/migration tooling).
+    pub fn audit_all(&self) -> &[AuditRecord] {
+        &self.audit
+    }
+
+    /// Per-target version map (inspection/migration tooling).
+    pub fn target_versions_map(&self) -> &BTreeMap<String, u64> {
+        &self.target_versions
+    }
+
+    /// Raw delegated registries (inspection/migration tooling).
+    pub fn delegated_registries_raw(&self) -> &BTreeMap<String, (Vec<u8>, TldRegistry)> {
+        &self.registries
+    }
+
     /// Last accepted mutation version for a target key ("domain:x.y").
     pub fn target_version(&self, target_key: &str) -> u64 {
         self.target_versions.get(target_key).copied().unwrap_or(0)
@@ -272,6 +329,7 @@ impl RegistryStore {
         for event in &self.audit {
             event.verify(expected_root_key)?;
         }
+        self.verify_tables()?;
         Ok(serde_json::json!({
             "root_version": self.zone.root_version,
             "tlds": self.zone.tlds.len(),
@@ -281,6 +339,7 @@ impl RegistryStore {
             "blocks": blocks.len(),
             "audit_events": self.audit.len(),
             "mutations": self.applied.len(),
+            "backend": "redb",
             "verified": true,
         }))
     }
@@ -383,12 +442,15 @@ impl RegistryStore {
         // Commit to memory, then persist. Registry bytes ship as manifests
         // too (content-addressed fetch path).
         self.zone = zone;
+        let mut batch_registry: Option<(String, Vec<u8>)> = None;
         if let Some((tld, bytes, parsed)) = new_registry {
             let hash = federate_storage::hash_bytes(&bytes);
             self.write_manifest(&hash, &bytes)?;
+            batch_registry = Some((tld.clone(), bytes.clone()));
             self.registries.insert(tld, (bytes, parsed));
         }
-        self.target_versions.insert(target_key, req.target_version);
+        self.target_versions
+            .insert(target_key.clone(), req.target_version);
         let applied = AppliedMutation {
             mutation: req.clone(),
             audit_event_id: event.event_id.clone(),
@@ -399,9 +461,26 @@ impl RegistryStore {
             .insert(req.mutation_id.clone(), applied.clone());
         self.audit.push(event.clone());
 
-        self.persist_state()?;
-        append_line(&self.dir.join("mutations.jsonl"), &applied)?;
-        append_line(&self.dir.join("audit.jsonl"), &event)?;
+        // One database transaction: either the whole mutation lands
+        // (records, zone version, history, audit, versions, pointer) or
+        // none of it does. Crash safety comes from the engine.
+        self.backend.commit_mutation(&CommitBatch {
+            zone_json: serde_json::to_vec(&self.zone)?,
+            root_version: self.zone.root_version,
+            state_hash: state_hash(&self.zone)?,
+            tlds: self.zone.tlds.values().cloned().collect(),
+            domains: self.zone.domains.values().cloned().collect(),
+            target_key,
+            target_version: req.target_version,
+            applied,
+            audit: event.clone(),
+            delegated_registry: batch_registry,
+            snapshot: SnapshotMeta {
+                root_version: self.zone.root_version,
+                created_at: self.zone.generated_at.clone(),
+                state_hash: state_hash(&self.zone)?,
+            },
+        })?;
         self.write_snapshot()?;
         Ok(event)
     }
@@ -854,30 +933,212 @@ impl RegistryStore {
         Ok(())
     }
 
-    fn persist_state(&self) -> Result<()> {
-        let state = PersistedState {
-            zone: self.zone.clone(),
-            registries: self
-                .registries
-                .iter()
-                .map(|(tld, (bytes, _))| (tld.clone(), hex::encode(bytes)))
-                .collect(),
-            target_versions: self.target_versions.clone(),
-        };
-        atomic_write(
-            &self.dir.join("state.json"),
-            &serde_json::to_vec_pretty(&state)?,
-        )
-    }
-
-    /// Write the current signed zone as an immutable snapshot file.
+    /// Write the current signed zone as a human-inspectable snapshot file
+    /// and record its metadata in the snapshots table (the signed bytes
+    /// are already durable in root_zone_versions).
     pub fn write_snapshot(&self) -> Result<PathBuf> {
         let dir = self.dir.join("snapshots");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("root-zone-v{}.json", self.zone.root_version));
         atomic_write(&path, &serde_json::to_vec_pretty(&self.zone)?)?;
+        self.backend.create_snapshot(&SnapshotMeta {
+            root_version: self.zone.root_version,
+            created_at: self.zone.generated_at.clone(),
+            state_hash: state_hash(&self.zone)?,
+        })?;
         Ok(path)
     }
+
+    // ------------------------------------------------------------------
+    // nonces (persistent challenge-response; survives restarts)
+    // ------------------------------------------------------------------
+
+    /// Issue a fresh single-use mutation nonce; returns (nonce, unix expiry).
+    pub fn issue_nonce(&self, now: i64) -> Result<(String, i64)> {
+        let nonce = hex::encode(rand::random::<[u8; 32]>());
+        let expires = now + crate::NONCE_TTL_SECS;
+        self.backend.reserve_nonce(&nonce, expires)?;
+        Ok((nonce, expires))
+    }
+
+    /// Consume a nonce: true exactly once, only before expiry, and only
+    /// once EVER (consumption is durable, so a restart cannot resurrect a
+    /// used challenge).
+    pub fn consume_nonce(&self, nonce: &str, now: i64) -> Result<bool> {
+        self.backend.consume_nonce(nonce, now)
+    }
+
+    // ------------------------------------------------------------------
+    // database inspection
+    // ------------------------------------------------------------------
+
+    /// Table counts and file size of the embedded database.
+    pub fn db_stats(&self) -> Result<serde_json::Value> {
+        self.backend.stats()
+    }
+
+    /// Cross-check the database tables against the signed zone: the zone
+    /// is the authority, the tables must mirror it exactly.
+    pub fn verify_tables(&self) -> Result<()> {
+        let tlds = self.backend.list_tlds()?;
+        if tlds.len() != self.zone.tlds.len()
+            || tlds.iter().any(|rec| {
+                self.zone
+                    .lookup_tld(&rec.tld)
+                    .map(|z| z.signature != rec.signature)
+                    .unwrap_or(true)
+            })
+        {
+            return Err(FederateError::InvalidRoot(
+                "tld_records table does not mirror the signed zone".into(),
+            ));
+        }
+        let domains = self.backend.list_domains()?;
+        if domains.len() != self.zone.domains.len()
+            || domains.iter().any(|rec| {
+                self.zone
+                    .lookup(&rec.domain)
+                    .map(|z| z.signature != rec.signature)
+                    .unwrap_or(true)
+            })
+        {
+            return Err(FederateError::InvalidRoot(
+                "domain_records table does not mirror the signed zone".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Import a legacy JSON registry into a fresh redb database. Validates the
+/// whole legacy state first (signatures fail closed), refuses when a
+/// database already exists, and moves the old JSON files into
+/// `legacy-json-backup/` on success. Content stores (manifests/, blocks/)
+/// and snapshot files stay where they are; they are content-addressed.
+pub fn migrate_json_to_redb(dir: &Path, expected_root_key: &str) -> Result<serde_json::Value> {
+    if RedbRegistryStore::db_path(dir).is_file() {
+        return Err(FederateError::Storage(format!(
+            "database already exists at {}; nothing to migrate",
+            RedbRegistryStore::db_path(dir).display()
+        )));
+    }
+    if !crate::legacy_json::exists(dir) {
+        return Err(FederateError::Storage(format!(
+            "no legacy JSON registry at {}",
+            dir.join("state.json").display()
+        )));
+    }
+    let legacy = crate::legacy_json::load(dir, expected_root_key)?;
+
+    let backend = RedbRegistryStore::create(dir)?;
+    let zone_json = serde_json::to_vec(&legacy.zone)?;
+    let hash = state_hash(&legacy.zone)?;
+    backend.commit_initial(&InitialState {
+        zone_json,
+        root_version: legacy.zone.root_version,
+        state_hash: hash.clone(),
+        tlds: legacy.zone.tlds.values().cloned().collect(),
+        domains: legacy.zone.domains.values().cloned().collect(),
+        delegated_registries: legacy
+            .registries
+            .iter()
+            .map(|(tld, (bytes, _))| (tld.clone(), bytes.clone()))
+            .collect(),
+        snapshot: SnapshotMeta {
+            root_version: legacy.zone.root_version,
+            created_at: legacy.zone.generated_at.clone(),
+            state_hash: hash,
+        },
+    })?;
+    for (version, bytes) in &legacy.snapshot_zones {
+        if *version != legacy.zone.root_version {
+            backend.put_root_zone_version(*version, bytes)?;
+        }
+    }
+    for applied in &legacy.applied {
+        backend.append_mutation(applied)?;
+    }
+    for event in &legacy.audit {
+        backend.append_audit_event(event)?;
+    }
+    let txn_versions = legacy.target_versions.clone();
+    for (key, version) in &txn_versions {
+        // put via meta-free path: reuse commit table through put helper
+        backend.put_target_version(key, *version)?;
+    }
+    let backup = crate::legacy_json::backup_files(dir)?;
+    Ok(serde_json::json!({
+        "migrated": true,
+        "root_version": legacy.zone.root_version,
+        "tlds": legacy.zone.tlds.len(),
+        "domains": legacy.zone.domains.len(),
+        "delegated_registries": legacy.registries.len(),
+        "mutations": legacy.applied.len(),
+        "audit_events": legacy.audit.len(),
+        "older_zone_versions": legacy.snapshot_zones.len(),
+        "legacy_backup": backup.display().to_string(),
+        "database": RedbRegistryStore::db_path(dir).display().to_string(),
+    }))
+}
+
+/// Copy the registry database to `output` as a backup. Run with the server
+/// stopped (or accept a point-in-time copy); the copy is sanity-opened
+/// before reporting success. Content stores and private keys are separate
+/// and need their own backup (see docs/en-US/backups.md).
+pub fn backup_registry(dir: &Path, output: &Path) -> Result<serde_json::Value> {
+    let src = RedbRegistryStore::db_path(dir);
+    if !src.is_file() {
+        return Err(FederateError::Storage(format!(
+            "no registry database at {}",
+            src.display()
+        )));
+    }
+    if output.exists() {
+        return Err(FederateError::Storage(format!(
+            "{} already exists; refusing to overwrite a backup",
+            output.display()
+        )));
+    }
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::copy(&src, output)?;
+    // Sanity: the copy must open as a database.
+    redb::Database::open(output)
+        .map_err(|e| FederateError::Storage(format!("backup copy failed verification: {e}")))?;
+    let bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+    Ok(serde_json::json!({
+        "backup": output.display().to_string(),
+        "bytes": bytes,
+    }))
+}
+
+/// Restore a registry database from a backup file. Refuses to clobber an
+/// existing database unless `force`; the restored registry is fully
+/// re-verified against the root key before reporting success.
+pub fn restore_registry(
+    input: &Path,
+    dir: &Path,
+    expected_root_key: &str,
+    force: bool,
+) -> Result<serde_json::Value> {
+    let dst = RedbRegistryStore::db_path(dir);
+    if dst.is_file() && !force {
+        return Err(FederateError::Storage(format!(
+            "{} already exists; pass --force to replace it with the backup",
+            dst.display()
+        )));
+    }
+    std::fs::create_dir_all(dir)?;
+    std::fs::copy(input, &dst)?;
+    let store = RegistryStore::open(dir, expected_root_key)?;
+    let report = store.verify_all(expected_root_key)?;
+    Ok(serde_json::json!({
+        "restored": dst.display().to_string(),
+        "verify": report,
+    }))
 }
 
 /// Status transition matrix for root-managed domains. Same-status writes
@@ -908,27 +1169,4 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
-}
-
-fn append_line<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    use std::io::Write;
-    let mut line = serde_json::to_vec(value)?;
-    line.push(b'\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(&line)?;
-    Ok(())
-}
-
-fn read_lines(path: &Path) -> Result<Vec<String>> {
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    Ok(std::fs::read_to_string(path)?
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.to_string())
-        .collect())
 }

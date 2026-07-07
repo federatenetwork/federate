@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use federate_identity::NodeIdentity;
-use federate_mutation::{MutationContext, MutationRequest, NonceStore, RegistryStore, SitePackage};
+use federate_mutation::{MutationContext, MutationRequest, RegistryStore, SitePackage};
 use federate_naming::{validate_tld_name, DomainRecord, RegistryType};
 use federate_root::{Blocklists, RootZone, TldRecord};
 use std::collections::HashMap;
@@ -56,10 +56,10 @@ struct Args {
 }
 
 struct Store {
-    /// The persistent, runtime-mutable Federate Root Registry.
+    /// The persistent, runtime-mutable Federate Root Registry (embedded
+    /// redb database; nonces live in it too, so replay protection
+    /// survives restarts).
     registry: RwLock<RegistryStore>,
-    /// Single-use mutation challenges (anti-replay).
-    nonces: NonceStore,
     blocklists: Blocklists,
     /// Federate Root Key: signs the zone, TLD records, and audit events.
     root_key: NodeIdentity,
@@ -222,7 +222,6 @@ fn build_store(args: &Args) -> anyhow::Result<Store> {
 
     Ok(Store {
         registry: RwLock::new(registry),
-        nonces: NonceStore::default(),
         blocklists,
         root_key,
         operator_key,
@@ -631,16 +630,27 @@ async fn run_mutation(
     content: Option<(Vec<u8>, Vec<federate_mutation::ContentBlock>)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let now = chrono::Utc::now();
-    if !s.nonces.consume(&req.nonce, now.timestamp()) {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "accepted": false,
-                "error": "unknown, expired, or already-used nonce; request a fresh challenge at POST /v1/mutations/nonce",
-            })),
-        );
-    }
     let mut registry = s.registry.write().await;
+    // Nonce consumption is durable (nonces table), so a used challenge
+    // stays used across restarts.
+    match registry.consume_nonce(&req.nonce, now.timestamp()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "accepted": false,
+                    "error": "unknown, expired, or already-used nonce; request a fresh challenge at POST /v1/mutations/nonce",
+                })),
+            )
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "accepted": false, "error": e.to_string() })),
+            )
+        }
+    }
     if let Some((manifest_bytes, blocks)) = content {
         let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
         if let Err(e) = registry
@@ -672,14 +682,22 @@ async fn run_mutation(
 
 /// Challenge half of challenge-response: a single-use nonce the next signed
 /// mutation must embed.
-async fn mutation_nonce(State(s): State<Arc<Store>>) -> Json<serde_json::Value> {
+async fn mutation_nonce(State(s): State<Arc<Store>>) -> (StatusCode, Json<serde_json::Value>) {
     let now = chrono::Utc::now().timestamp();
-    let (nonce, expires_at) = s.nonces.issue(now);
-    Json(serde_json::json!({
-        "nonce": nonce,
-        "expires_at_unix": expires_at,
-        "ttl_secs": federate_mutation::NONCE_TTL_SECS,
-    }))
+    match s.registry.read().await.issue_nonce(now) {
+        Ok((nonce, expires_at)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "nonce": nonce,
+                "expires_at_unix": expires_at,
+                "ttl_secs": federate_mutation::NONCE_TTL_SECS,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
 }
 
 async fn submit_mutation(

@@ -71,6 +71,8 @@ pub enum FederateError {
     Replay(String),
     #[error("mutation rejected: {0}")]
     MutationRejected(String),
+    #[error("storage error: {0}")]
+    Storage(String),
     #[error("network error: {0}")]
     Network(String),
     #[error("io error: {0}")]

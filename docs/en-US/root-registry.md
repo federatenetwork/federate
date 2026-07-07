@@ -54,15 +54,20 @@ Everything lives under `<data_dir>/registry/` (default
 
 | Path | Contents |
 |---|---|
-| `state.json` | current signed root zone, delegated registries (exact signed bytes), per-target mutation versions |
+| `registry.redb` | the authoritative embedded database (redb): tables `tld_records`, `domain_records`, `root_zone_versions`, `mutations`, `audit_events`, `snapshots`, `nonces`, `registry_metadata`, `delegated_registries`, `target_versions` |
 | `manifests/<hash>` | content-addressed manifest and registry bytes |
 | `blocks/` | content-addressed site blocks (BLAKE3-sharded store) |
-| `audit.jsonl` | append-only signed audit log, one event per line |
-| `mutations.jsonl` | append-only history of accepted mutations |
-| `snapshots/root-zone-v<N>.json` | one immutable root zone snapshot per accepted version |
+| `snapshots/root-zone-v<N>.json` | human-inspectable root zone copies (the signed bytes are also in the database) |
 
-Writes are atomic (write to `.tmp`, then rename). Private keys are NEVER
-stored in any of these records; they stay in their own `identity.key` files.
+Every accepted mutation commits in ONE database transaction: it either
+fully applies or not at all, and a crash mid-mutation leaves the previous
+state intact. Nonces are persistent too, so a consumed challenge can never
+be replayed, not even across restarts. Private keys are NEVER stored in
+the database or any record; they stay in their own 0600 `identity.key`
+files. Blocklists remain external policy data files (`blocked_tlds.txt`,
+`data/blocked/*`). The old JSON layout (`state.json` + JSONL logs) is
+retired; see [migrations.md](migrations.md) to convert an existing node
+and [backups.md](backups.md) for backup/restore.
 
 ## Fail-closed loading
 
@@ -73,7 +78,9 @@ On boot the registry is re-verified before it is served:
   its root-signed TLD record;
 - every manifest and block is checked against its content address
   (corrupted content entries are dropped, never served);
-- a tampered `state.json` stops the node instead of serving forged data.
+- a tampered database record (e.g. a forged zone) stops the node instead
+  of serving forged data; `federate registry db verify` additionally
+  cross-checks the record tables against the signed zone.
 
 ## Root zone versions and rollback protection
 
@@ -92,6 +99,10 @@ federate registry audit --limit 50      # the signed audit log
 federate registry verify                 # ask the node to self-verify everything
 federate registry snapshot               # force a root zone snapshot
 federate mutation inspect <mutation_id> # one accepted mutation + its audit event
+federate registry db stats               # table counts + database size (offline)
+federate registry db verify              # full offline verification incl. table consistency
+federate registry backup --output <file> # copy the database (offline; see backups.md)
+federate registry restore --input <file> # restore + full re-verification
 ```
 
 HTTP equivalents: `GET /v1/registry/status`, `GET /v1/registry/audit`,

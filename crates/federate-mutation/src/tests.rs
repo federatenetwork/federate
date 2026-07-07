@@ -2,10 +2,7 @@
 //! persistence, authorization, replay/rollback rejection, and a full native
 //! protocol resolution of a runtime-published package.
 
-use crate::{
-    MutationAction, MutationContext, MutationRequest, NonceStore, RegistryStore,
-    SIGNATURE_ALGORITHM,
-};
+use crate::{MutationAction, MutationContext, MutationRequest, RegistryStore, SIGNATURE_ALGORITHM};
 use federate_core::FederateError;
 use federate_identity::NodeIdentity;
 use federate_manifest::Manifest;
@@ -190,7 +187,7 @@ fn first_boot_seed_creates_registry() {
     let store = fix.seed();
     assert!(RegistryStore::exists(&fix.registry_dir()));
     assert_eq!(store.zone().tlds.len(), 2);
-    assert!(fix.registry_dir().join("state.json").is_file());
+    assert!(fix.registry_dir().join("registry.redb").is_file());
     assert!(fix
         .registry_dir()
         .join("snapshots/root-zone-v1000.json")
@@ -224,13 +221,37 @@ fn tampered_state_fails_closed_on_open() {
     let fix = Fixture::new("tamper");
     let mut store = fix.seed();
     fix.publish(&mut store, "joao.pagina", "x", 1).unwrap();
+    let version = store.zone().root_version;
     drop(store);
-    let state_path = fix.registry_dir().join("state.json");
-    let tampered = std::fs::read_to_string(&state_path)
-        .unwrap()
-        .replace("joao.pagina", "eval.pagina");
-    std::fs::write(&state_path, tampered).unwrap();
-    assert!(RegistryStore::open(&fix.registry_dir(), &fix.root.node_id()).is_err());
+
+    // Tamper with the stored signed zone directly in the database: rename
+    // the domain without re-signing. The signature (and state hash) must
+    // catch it on the next open.
+    {
+        use redb::ReadableDatabase;
+        let db = redb::Database::open(fix.registry_dir().join("registry.redb")).unwrap();
+        let zones: redb::TableDefinition<u64, &[u8]> =
+            redb::TableDefinition::new("root_zone_versions");
+        let original = {
+            let txn = db.begin_read().unwrap();
+            let t = txn.open_table(zones).unwrap();
+            t.get(version).unwrap().unwrap().value().to_vec()
+        };
+        let forged = String::from_utf8(original)
+            .unwrap()
+            .replace("joao.pagina", "eval.pagina")
+            .into_bytes();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut t = txn.open_table(zones).unwrap();
+            t.insert(version, forged.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+    assert!(
+        RegistryStore::open(&fix.registry_dir(), &fix.root.node_id()).is_err(),
+        "forged zone record must fail verification on open"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -415,12 +436,40 @@ fn stale_timestamp_rejected() {
 }
 
 #[test]
-fn nonce_challenge_response_is_single_use() {
-    let store = NonceStore::default();
+fn nonce_challenge_response_is_single_use_even_across_restart() {
+    let fix = Fixture::new("nonce-restart");
+    let store = fix.seed();
     let now = chrono::Utc::now().timestamp();
-    let (nonce, _) = store.issue(now);
-    assert!(store.consume(&nonce, now + 1));
-    assert!(!store.consume(&nonce, now + 2), "replayed nonce rejected");
+
+    // Basic single use.
+    let (nonce, expires) = store.issue_nonce(now).unwrap();
+    assert!(expires > now);
+    assert!(store.consume_nonce(&nonce, now + 1).unwrap());
+    assert!(
+        !store.consume_nonce(&nonce, now + 2).unwrap(),
+        "replayed nonce rejected"
+    );
+    assert!(!store.consume_nonce("unknown", now).unwrap());
+
+    // Expired nonce rejected.
+    let (stale, _) = store.issue_nonce(now).unwrap();
+    assert!(!store
+        .consume_nonce(&stale, now + crate::NONCE_TTL_SECS + 1)
+        .unwrap());
+
+    // Consumption is durable: a consumed nonce stays consumed after a
+    // restart, and an issued-but-unused one survives to be used once.
+    let (used, _) = store.issue_nonce(now).unwrap();
+    let (pending, _) = store.issue_nonce(now).unwrap();
+    assert!(store.consume_nonce(&used, now + 1).unwrap());
+    drop(store);
+    let store = RegistryStore::open(&fix.registry_dir(), &fix.root.node_id()).unwrap();
+    assert!(
+        !store.consume_nonce(&used, now + 2).unwrap(),
+        "consumed nonce cannot be reused after restart"
+    );
+    assert!(store.consume_nonce(&pending, now + 2).unwrap());
+    assert!(!store.consume_nonce(&pending, now + 3).unwrap());
 }
 
 // ---------------------------------------------------------------------------
@@ -834,6 +883,10 @@ async fn published_package_resolves_over_native_protocol() {
     fix.publish(&mut store, "joao.pagina", "<h1>native oi</h1>", 1)
         .unwrap();
     let root_key = fix.root.node_id();
+    // Restart the registry (drop + reopen from the redb database) before
+    // serving: native fetch must work from persisted state alone.
+    drop(store);
+    let store = RegistryStore::open(&fix.registry_dir(), &root_key).unwrap();
     let shared = std::sync::Arc::new(tokio::sync::RwLock::new(store));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1132,5 +1185,173 @@ fn no_hardcoded_tld_list_exists_in_runtime_code() {
     assert!(
         hits.is_empty(),
         "hardcoded TLD list tokens found in source: {hits:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// redb backend: migration, backup/restore, stats, atomicity
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migration_from_json_to_redb_works() {
+    // Build a real registry, export it in the legacy JSON layout, migrate
+    // it into redb, and check nothing was lost.
+    let fix = Fixture::new("migrate-src");
+    let mut store = fix.seed();
+    fix.publish(&mut store, "joao.pagina", "<h1>migrado</h1>", 1)
+        .unwrap();
+    let want_version = store.zone().root_version;
+
+    let legacy_dir = fix.dir.join("legacy-registry");
+    crate::legacy_json::write(
+        &legacy_dir,
+        store.zone(),
+        store.delegated_registries_raw(),
+        store.target_versions_map(),
+        &store.mutations_list(),
+        store.audit_all(),
+    )
+    .unwrap();
+    let replay_req = store.mutations_list()[0].mutation.clone();
+    drop(store);
+
+    let report = crate::migrate_json_to_redb(&legacy_dir, &fix.root.node_id()).unwrap();
+    assert_eq!(report["migrated"], true);
+    assert_eq!(report["tlds"], 2);
+    assert_eq!(report["mutations"], 1);
+    assert!(legacy_dir.join("registry.redb").is_file());
+    assert!(
+        !legacy_dir.join("state.json").is_file(),
+        "legacy files moved into the backup dir"
+    );
+    assert!(legacy_dir.join("legacy-json-backup/state.json").is_file());
+
+    // A second migration has nothing to do.
+    assert!(crate::migrate_json_to_redb(&legacy_dir, &fix.root.node_id()).is_err());
+
+    let mut migrated = RegistryStore::open(&legacy_dir, &fix.root.node_id()).unwrap();
+    assert_eq!(migrated.zone().root_version, want_version);
+    assert!(migrated.zone().lookup("joao.pagina").is_some());
+    assert_eq!(migrated.mutation_count(), 1);
+    assert_eq!(migrated.audit_count(), 1);
+    migrated.verify_tables().unwrap();
+
+    // Replay protection survived the migration.
+    assert!(matches!(
+        migrated.apply(&replay_req, &fix.ctx()),
+        Err(FederateError::Replay(_))
+    ));
+}
+
+#[test]
+fn migration_refuses_invalid_json_state() {
+    let fix = Fixture::new("migrate-bad");
+    let mut store = fix.seed();
+    fix.publish(&mut store, "joao.pagina", "x", 1).unwrap();
+    let legacy_dir = fix.dir.join("legacy-bad");
+    crate::legacy_json::write(
+        &legacy_dir,
+        store.zone(),
+        store.delegated_registries_raw(),
+        store.target_versions_map(),
+        &store.mutations_list(),
+        store.audit_all(),
+    )
+    .unwrap();
+    drop(store);
+
+    // Forge the state file (domain renamed, signature untouched): the
+    // migration must refuse and write NO database.
+    let state_path = legacy_dir.join("state.json");
+    let forged = std::fs::read_to_string(&state_path)
+        .unwrap()
+        .replace("joao.pagina", "eval.pagina");
+    std::fs::write(&state_path, forged).unwrap();
+    assert!(crate::migrate_json_to_redb(&legacy_dir, &fix.root.node_id()).is_err());
+    assert!(
+        !legacy_dir.join("registry.redb").is_file()
+            || RegistryStore::open(&legacy_dir, &fix.root.node_id()).is_err(),
+        "no usable database may come out of forged state"
+    );
+}
+
+#[test]
+fn backup_and_restore_roundtrip() {
+    let fix = Fixture::new("backup");
+    let mut store = fix.seed();
+    fix.publish(&mut store, "joao.pagina", "<h1>backup</h1>", 1)
+        .unwrap();
+    let version = store.zone().root_version;
+    drop(store);
+
+    let backup_file = fix.dir.join("registry.backup.redb");
+    let report = crate::backup_registry(&fix.registry_dir(), &backup_file).unwrap();
+    assert!(report["bytes"].as_u64().unwrap() > 0);
+    // Refuses to overwrite an existing backup.
+    assert!(crate::backup_registry(&fix.registry_dir(), &backup_file).is_err());
+
+    // Restore into a fresh dir and verify.
+    let restore_dir = fix.dir.join("restored-registry");
+    let report =
+        crate::restore_registry(&backup_file, &restore_dir, &fix.root.node_id(), false).unwrap();
+    assert_eq!(report["verify"]["verified"], true);
+    {
+        let restored = RegistryStore::open(&restore_dir, &fix.root.node_id()).unwrap();
+        assert_eq!(restored.zone().root_version, version);
+        assert!(restored.zone().lookup("joao.pagina").is_some());
+    }
+
+    // Refuses to clobber without force; force works (single-process lock:
+    // the restored db must be closed first).
+    assert!(
+        crate::restore_registry(&backup_file, &restore_dir, &fix.root.node_id(), false).is_err()
+    );
+    crate::restore_registry(&backup_file, &restore_dir, &fix.root.node_id(), true).unwrap();
+}
+
+#[test]
+fn db_stats_report_all_tables() {
+    let fix = Fixture::new("db-stats");
+    let mut store = fix.seed();
+    fix.publish(&mut store, "joao.pagina", "x", 1).unwrap();
+    let stats = store.db_stats().unwrap();
+    assert_eq!(stats["backend"], "redb");
+    assert_eq!(stats["tables"]["tld_records"], 2);
+    assert_eq!(stats["tables"]["domain_records"], 1);
+    assert_eq!(stats["tables"]["mutations"], 1);
+    assert_eq!(stats["tables"]["audit_events"], 1);
+    assert!(stats["tables"]["root_zone_versions"].as_u64().unwrap() >= 2);
+    assert!(stats["file_bytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn rejected_mutation_leaves_no_partial_state() {
+    let fix = Fixture::new("atomic");
+    let mut store = fix.seed();
+    fix.publish(&mut store, "joao.pagina", "x", 1).unwrap();
+    let version = store.zone().root_version;
+    let mutations = store.mutation_count();
+
+    // Unauthorized mutation: rejected before any commit.
+    let intruder = NodeIdentity::load_or_create(&fix.dir.join("keys/atomic-intruder")).unwrap();
+    let req = fix.mutation(
+        &intruder,
+        7,
+        MutationAction::SetDomainStatus {
+            domain: "joao.pagina".into(),
+            status: DomainStatus::Suspended,
+        },
+    );
+    assert!(store.apply(&req, &fix.ctx()).is_err());
+    drop(store);
+
+    // Nothing changed on disk: same version, consistent tables, clean
+    // self-verification.
+    let store = RegistryStore::open(&fix.registry_dir(), &fix.root.node_id()).unwrap();
+    assert_eq!(store.zone().root_version, version);
+    assert_eq!(store.mutation_count(), mutations);
+    assert_eq!(
+        store.verify_all(&fix.root.node_id()).unwrap()["verified"],
+        true
     );
 }

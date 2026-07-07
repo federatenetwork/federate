@@ -327,9 +327,13 @@ gravadas com `0600` e nunca servidas por nenhuma API.
 - Backup sugerido (chaves + registry persistente + snapshot do diretório,
   NÃO os caches de blocos):
   `tar czf federate-backup.tgz -C /var/lib/federate data`, guardado fora da
-  máquina. `data/registry/` É o estado autoritativo da rede (zona assinada,
-  log de auditoria, histórico de mutações, snapshots); trate o backup como
-  o de um banco de dados.
+  máquina. `data/registry/registry.redb` É o estado autoritativo da rede
+  (um banco embutido redb: registros, versões da zona, histórico de
+  mutações, log de auditoria, nonces); trate o backup como o de um banco de
+  dados, de preferência com `federate registry backup` / `restore` (veja
+  [backups.md](backups.md)). Nós atualizados do layout JSON antigo rodam
+  `federate registry migrate-json-to-redb` uma vez (veja
+  [migrations.md](migrations.md)).
 
 ## Comportamento de restart
 

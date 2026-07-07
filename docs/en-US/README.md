@@ -72,6 +72,8 @@ Add hosts-file mappings ([hosts-setup.md](hosts-setup.md)), then open **http://h
 - [mutations.md](mutations.md) - signed mutations, challenge-response, audit log
 - [publishing.md](publishing.md) - publishing sites through the ingest API
 - [security.md](security.md) - security model of the runtime registry
+- [backups.md](backups.md) - backing up and restoring the registry database
+- [migrations.md](migrations.md) - migrating registry storage (JSON to redb)
 - [signatures.md](signatures.md) - chain of trust, canonical signing
 - [blocked-tlds.md](blocked-tlds.md) - IANA/reserved/policy blocklists
 - [tld-marketplace-roadmap.md](tld-marketplace-roadmap.md) - future marketplace phases

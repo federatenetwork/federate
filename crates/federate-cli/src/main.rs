@@ -352,6 +352,54 @@ enum RegistryCmd {
     Snapshot,
     /// Ask Node 1 to self-verify the whole persistent registry
     Verify,
+    /// One-time migration of a legacy JSON registry (state.json + JSONL
+    /// logs) into the redb database. Validates every signature first and
+    /// refuses on any failure; old files move to legacy-json-backup/.
+    /// Run with federate-server STOPPED.
+    MigrateJsonToRedb {
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+    },
+    /// Copy the registry database to a backup file (server stopped).
+    /// Content stores (manifests/, blocks/) and private keys are separate;
+    /// see docs/en-US/backups.md.
+    Backup {
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+    },
+    /// Restore the registry database from a backup file and fully
+    /// re-verify it against the root key (server stopped).
+    Restore {
+        #[arg(long)]
+        input: std::path::PathBuf,
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+        /// Replace an existing database
+        #[arg(long)]
+        force: bool,
+    },
+    /// Embedded database inspection (server stopped)
+    Db {
+        #[command(subcommand)]
+        cmd: RegistryDbCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryDbCmd {
+    /// Table counts and file size of registry.redb
+    Stats {
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+    },
+    /// Open the database and verify everything: zone signature, delegated
+    /// registries, content hashes, audit signatures, table consistency
+    Verify {
+        #[arg(long, default_value = ".federate-server")]
+        data_dir: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2068,6 +2116,82 @@ async fn registry_cmd(cli: &Ctx, cmd: RegistryCmd) {
                 }
                 Ok((code, v)) => die(&format!("snapshot failed ({code}): {v}")),
                 Err(e) => die(&format!("cannot request snapshot ({e})")),
+            }
+        }
+        RegistryCmd::MigrateJsonToRedb { data_dir } => {
+            eprintln!(
+                "note: run this with federate-server STOPPED (the database is single-writer)."
+            );
+            let root = NodeIdentity::load_or_create(&data_dir.join("root"))
+                .unwrap_or_else(|e| die(&format!("cannot load root key: {e}")));
+            match federate_mutation::migrate_json_to_redb(
+                &data_dir.join("registry"),
+                &root.node_id(),
+            ) {
+                Ok(report) => {
+                    println!("[ok] migrated JSON registry to redb");
+                    pretty(&report);
+                }
+                Err(e) => die(&format!("[!!] migration refused: {e}")),
+            }
+        }
+        RegistryCmd::Backup { output, data_dir } => {
+            match federate_mutation::backup_registry(&data_dir.join("registry"), &output) {
+                Ok(report) => {
+                    println!(
+                        "[ok] registry database backed up to {} ({} bytes)",
+                        report["backup"].as_str().unwrap_or("?"),
+                        report["bytes"].as_u64().unwrap_or(0)
+                    );
+                    println!("remember: manifests/, blocks/, and private keys need their own backup (docs/en-US/backups.md)");
+                }
+                Err(e) => die(&format!("[!!] backup failed: {e}")),
+            }
+        }
+        RegistryCmd::Restore {
+            input,
+            data_dir,
+            force,
+        } => {
+            let root = NodeIdentity::load_or_create(&data_dir.join("root"))
+                .unwrap_or_else(|e| die(&format!("cannot load root key: {e}")));
+            match federate_mutation::restore_registry(
+                &input,
+                &data_dir.join("registry"),
+                &root.node_id(),
+                force,
+            ) {
+                Ok(report) => {
+                    println!("[ok] registry database restored and verified");
+                    pretty(&report);
+                }
+                Err(e) => die(&format!("[!!] restore failed: {e}")),
+            }
+        }
+        RegistryCmd::Db { cmd } => {
+            let (data_dir, verify) = match cmd {
+                RegistryDbCmd::Stats { data_dir } => (data_dir, false),
+                RegistryDbCmd::Verify { data_dir } => (data_dir, true),
+            };
+            let root = NodeIdentity::load_or_create(&data_dir.join("root"))
+                .unwrap_or_else(|e| die(&format!("cannot load root key: {e}")));
+            let store =
+                federate_mutation::RegistryStore::open(&data_dir.join("registry"), &root.node_id())
+                    .unwrap_or_else(|e| die(&format!("[!!] cannot open registry: {e}")));
+            if verify {
+                match store.verify_all(&root.node_id()) {
+                    Ok(report) => {
+                        println!("[ok] database verification passed");
+                        pretty(&report);
+                    }
+                    Err(e) => die(&format!("[!!] database verification FAILED: {e}")),
+                }
+            } else {
+                pretty(
+                    &store
+                        .db_stats()
+                        .unwrap_or_else(|e| die(&format!("stats failed: {e}"))),
+                );
             }
         }
         RegistryCmd::Verify => match node_get(&cli.bootstrap, "/v1/registry/verify").await {

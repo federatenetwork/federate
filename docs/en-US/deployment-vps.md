@@ -324,8 +324,13 @@ written `0600` and never served by any API.
 - Suggested backup (keys + persistent registry + directory snapshot, NOT
   block caches):
   `tar czf federate-backup.tgz -C /var/lib/federate data`, stored off-box.
-  `data/registry/` IS the authoritative network state (signed zone, audit
-  log, mutation history, snapshots); back it up like a database.
+  `data/registry/registry.redb` IS the authoritative network state (an
+  embedded redb database: records, zone versions, mutation history, audit
+  log, nonces); back it up like a database, ideally with
+  `federate registry backup` / `restore` (see
+  [backups.md](backups.md)). Nodes upgraded from the old JSON layout run
+  `federate registry migrate-json-to-redb` once (see
+  [migrations.md](migrations.md)).
 
 ## Restart behavior
 

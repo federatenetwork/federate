@@ -73,6 +73,8 @@ Adicione os mapeamentos no arquivo hosts ([hosts-setup.md](hosts-setup.md)) e en
 - [mutations.md](mutations.md) - mutações assinadas, desafio-resposta, log de auditoria
 - [publishing.md](publishing.md) - publicando sites pela API de ingestão
 - [security.md](security.md) - modelo de segurança do registry em runtime
+- [backups.md](backups.md) - backup e restore do banco do registry
+- [migrations.md](migrations.md) - migrando o armazenamento do registry (JSON para redb)
 - [signatures.md](signatures.md) - cadeia de confiança, assinatura canônica
 - [blocked-tlds.md](blocked-tlds.md) - listas de bloqueio IANA/reservados/política
 - [tld-marketplace-roadmap.md](tld-marketplace-roadmap.md) - fases futuras do marketplace
