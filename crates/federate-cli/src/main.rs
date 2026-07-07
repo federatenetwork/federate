@@ -2302,9 +2302,14 @@ fn handler_install() {
     // The whole handler: rewrite fed://x -> http://x and let the default
     // browser take it. Generated and compiled locally by osacompile (ships
     // with macOS), so Gatekeeper never quarantines it.
+    //
+    // The rewritten URL must go out through /usr/bin/open: an AppleScript
+    // `open location` issued from inside an applet's own `open location`
+    // handler is delivered back to the applet itself, which silently drops
+    // it (it is not a fed:// URL), so the browser never opens.
     let script = r#"on open location theURL
 	if theURL starts with "fed://" then
-		open location "http://" & text 7 thru -1 of theURL
+		do shell script "/usr/bin/open " & quoted form of ("http://" & text 7 thru -1 of theURL)
 	end if
 end open location"#;
     let src = std::env::temp_dir().join("federate-url-handler.applescript");
