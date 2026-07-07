@@ -1,0 +1,34 @@
+# Traefik v3 dynamic config for the federate.network host itself:
+# - https://federate.network/dns-query  -> DNS-over-HTTPS (federate-doh)
+#   DoH survives networks that hijack port 53: one browser setting or one
+#   configuration profile, and every Federate TLD resolves anywhere.
+# - https://federate.network/...        -> Node 1 bootstrap/registry API
+# The /dns-query router outranks the bootstrap router by rule length; both
+# outrank the priority-1 gateway catch-all.
+http:
+  routers:
+    federate-doh:
+      rule: "Host(`federate.network`) && Path(`/dns-query`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: federate-doh
+    federate-bootstrap-https:
+      rule: "Host(`federate.network`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: federate-node1
+    federate-bootstrap-http:
+      rule: "Host(`federate.network`)"
+      entryPoints: [web]
+      service: federate-node1
+  services:
+    federate-doh:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8453"
+    federate-node1:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:9600"

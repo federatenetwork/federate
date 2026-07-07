@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>DNSSettings</key>
+            <dict>
+                <key>DNSProtocol</key>
+                <string>HTTPS</string>
+                <key>ServerURL</key>
+                <string>https://federate.network/dns-query</string>
+            </dict>
+            <key>PayloadDescription</key>
+            <string>Resolves Federate Network TLDs (and the normal web) over encrypted DNS.</string>
+            <key>PayloadDisplayName</key>
+            <string>Federate Network DNS</string>
+            <key>PayloadIdentifier</key>
+            <string>network.federate.dns.4BACA666-AA68-4F05-8173-94CC8E45BA76</string>
+            <key>PayloadType</key>
+            <string>com.apple.dnsSettings.managed</string>
+            <key>PayloadUUID</key>
+            <string>4BACA666-AA68-4F05-8173-94CC8E45BA76</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+    </array>
+    <key>PayloadDescription</key>
+    <string>Encrypted DNS (DoH) via federate.network: Federate TLDs work on any network, the normal web keeps working.</string>
+    <key>PayloadDisplayName</key>
+    <string>Federate Network DNS</string>
+    <key>PayloadIdentifier</key>
+    <string>network.federate.dns.profile.EEFD08F4-23B2-458B-B982-8D5ADB3EDA8E</string>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>EEFD08F4-23B2-458B-B982-8D5ADB3EDA8E</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>

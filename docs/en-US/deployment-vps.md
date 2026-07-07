@@ -444,9 +444,38 @@ the public roots while google.com still resolves. On such networks test
 DNS from another vantage point; the native protocol (4077) and the HTTP
 door (80) are unaffected.
 
-Phone/desktop onboarding: set the device's DNS server to 195.201.171.223,
-then open `http://home.fed`. Networks with DNS interception need the
-hosts-file route ([hosts-setup.md](hosts-setup.md)) instead.
+### Encrypted DNS (DoH): the setting that works on ANY network
+
+Many ISPs and home routers silently intercept every packet on port 53 and
+answer from the public DNS, where Federate TLDs do not exist (the
+giveaway: NXDOMAIN answers with the `ad` flag, EDNS, and a round-trip far
+below the real network RTT). Plain DNS to the node is dead on such
+networks, no matter what the device configures. DNS-over-HTTPS rides on
+port 443 and cannot be intercepted.
+
+The stack above includes `federate-doh` (a DoH terminator forwarding to
+`federate-dnsd`), and `traefik-federate-network.yml` routes
+`https://federate.network/dns-query` to it with a Let's Encrypt
+certificate. The same file exposes Node 1's bootstrap API at
+`https://federate.network`, which makes the CLI's DEFAULT bootstrap URL
+live: `federate fetch fed://home.fed/` works with zero flags.
+
+User setup, once, no router or ISP involvement:
+
+- **macOS/iOS**: install `deploy/federate-dns.mobileconfig` (double-click,
+  then System Settings, General, Device Management, Install). System-wide.
+- **Chrome/Edge/Firefox**: Settings, Secure DNS, custom provider:
+  `https://federate.network/dns-query`.
+- **Verification from any machine**:
+  `curl --doh-url https://federate.network/dns-query http://home.fed/`
+
+Plain port-53 DNS (195.201.171.223) keeps working for networks that do
+not intercept; hosts-file mappings ([hosts-setup.md](hosts-setup.md))
+remain the last-resort fallback.
+
+Phone/desktop onboarding: install the DoH profile above (or set the
+device's DNS server to 195.201.171.223 on networks without interception),
+then open `http://home.fed`.
 
 ## Scaling out (later)
 

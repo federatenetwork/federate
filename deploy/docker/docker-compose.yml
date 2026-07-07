@@ -94,6 +94,23 @@ services:
       federate:
         ipv4_address: 172.30.77.12
 
+  # DNS-over-HTTPS terminator: makes Federate DNS work on networks that
+  # hijack port 53 (many ISPs/routers). The reverse proxy terminates TLS
+  # for https://<domain>/dns-query and forwards here; this converts DoH to
+  # plain DNS against federate-dnsd. See traefik-federate-network.yml.
+  federate-doh:
+    image: satishweb/doh-server:latest
+    container_name: federate-doh
+    environment:
+      UPSTREAM_DNS_SERVER: "udp:172.30.77.12:5353"
+      DOH_HTTP_PREFIX: "/dns-query"
+      DOH_SERVER_LISTEN: ":8053"
+    ports:
+      - "127.0.0.1:8453:8053"
+    restart: unless-stopped
+    depends_on: [federate-dnsd]
+    networks: [federate]
+
 networks:
   federate:
     ipam:

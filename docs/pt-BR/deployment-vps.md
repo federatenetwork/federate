@@ -452,9 +452,39 @@ partir das raízes públicas enquanto google.com continua resolvendo. Nessas
 redes teste o DNS de outro ponto de vista; o protocolo nativo (4077) e a
 porta HTTP (80) não são afetados.
 
-Onboarding de celular/desktop: configure o DNS do aparelho para
-195.201.171.223 e abra `http://home.fed`. Redes com interceptação de DNS
-precisam da rota via arquivo hosts ([hosts-setup.md](hosts-setup.md)).
+### DNS criptografado (DoH): a configuração que funciona em QUALQUER rede
+
+Muitos provedores e roteadores domésticos interceptam silenciosamente todo
+pacote na porta 53 e respondem a partir do DNS público, onde TLDs Federate
+não existem (o sinal: respostas NXDOMAIN com flag `ad`, EDNS e um
+round-trip muito abaixo do RTT real da rede). DNS puro para o nó está
+morto nessas redes, não importa o que o aparelho configure. DNS-over-HTTPS
+viaja na porta 443 e não pode ser interceptado.
+
+O stack acima inclui o `federate-doh` (um terminador DoH encaminhando para
+o `federate-dnsd`), e o `traefik-federate-network.yml` roteia
+`https://federate.network/dns-query` para ele com certificado Let's
+Encrypt. O mesmo arquivo expõe a API de bootstrap do Node 1 em
+`https://federate.network`, o que torna viva a URL de bootstrap PADRÃO da
+CLI: `federate fetch fed://home.fed/` funciona sem flag nenhuma.
+
+Configuração do usuário, uma vez, sem roteador nem provedor:
+
+- **macOS/iOS**: instale `deploy/federate-dns.mobileconfig` (duplo clique,
+  depois Ajustes do Sistema, Geral, Gerenciamento de Dispositivo,
+  Instalar). Vale para o sistema todo.
+- **Chrome/Edge/Firefox**: Configurações, DNS seguro, provedor
+  personalizado: `https://federate.network/dns-query`.
+- **Verificação de qualquer máquina**:
+  `curl --doh-url https://federate.network/dns-query http://home.fed/`
+
+DNS puro na porta 53 (195.201.171.223) continua funcionando em redes que
+não interceptam; mapeamentos no arquivo hosts
+([hosts-setup.md](hosts-setup.md)) seguem como último recurso.
+
+Onboarding de celular/desktop: instale o perfil DoH acima (ou configure o
+DNS do aparelho para 195.201.171.223 em redes sem interceptação) e abra
+`http://home.fed`.
 
 ## Escalando depois
 
