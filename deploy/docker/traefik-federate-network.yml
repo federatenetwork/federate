@@ -13,16 +13,26 @@ http:
       tls:
         certResolver: letsencrypt
       service: federate-doh
-    federate-bootstrap-https:
-      rule: "Host(`federate.network`)"
+    federate-api-https:
+      rule: "Host(`federate.network`) && (PathPrefix(`/v1`) || Path(`/health`))"
       entryPoints: [websecure]
       tls:
         certResolver: letsencrypt
       service: federate-node1
-    federate-bootstrap-http:
-      rule: "Host(`federate.network`)"
+    federate-api-http:
+      rule: "Host(`federate.network`) && (PathPrefix(`/v1`) || Path(`/health`))"
       entryPoints: [web]
       service: federate-node1
+    federate-landing-https:
+      rule: "Host(`federate.network`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: federate-landing
+    federate-landing-http:
+      rule: "Host(`federate.network`)"
+      entryPoints: [web]
+      service: federate-landing
   services:
     federate-doh:
       loadBalancer:
@@ -32,3 +42,7 @@ http:
       loadBalancer:
         servers:
           - url: "http://127.0.0.1:9600"
+    federate-landing:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:8470"

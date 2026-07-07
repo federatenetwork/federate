@@ -111,6 +111,20 @@ services:
     depends_on: [federate-dnsd]
     networks: [federate]
 
+  # Public landing page for https://federate.network (old-web door with
+  # onboarding instructions; same branding as home.fed). Static files from
+  # sites/federate-network plus the signed DNS profile.
+  federate-landing:
+    image: nginx:alpine
+    container_name: federate-landing
+    volumes:
+      - ${FEDERATE_DATA:-./data}/landing:/usr/share/nginx/html:ro
+      - ./landing-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8470:80"
+    restart: unless-stopped
+    networks: [federate]
+
 networks:
   federate:
     ipam:

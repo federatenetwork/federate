@@ -1,0 +1,88 @@
+@font-face{font-family:'Averia Serif Libre';font-style:italic;font-weight:300;font-display:swap;src:url('/fonts/averia-serif-libre-300-italic.woff2') format('woff2')}
+@font-face{font-family:'Averia Serif Libre';font-style:italic;font-weight:400;font-display:swap;src:url('/fonts/averia-serif-libre-400-italic.woff2') format('woff2')}
+@font-face{font-family:'Averia Serif Libre';font-style:italic;font-weight:700;font-display:swap;src:url('/fonts/averia-serif-libre-700-italic.woff2') format('woff2')}
+@font-face{font-family:'Averia Serif Libre';font-style:normal;font-weight:300;font-display:swap;src:url('/fonts/averia-serif-libre-300.woff2') format('woff2')}
+@font-face{font-family:'Averia Serif Libre';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/averia-serif-libre-400.woff2') format('woff2')}
+@font-face{font-family:'Averia Serif Libre';font-style:normal;font-weight:700;font-display:swap;src:url('/fonts/averia-serif-libre-700.woff2') format('woff2')}
+
+/* --- Federate Network palette (primitives) --- */
+:root{
+  --cream:#FBF6F0;
+  --sand:#E8DEC5;
+  --bronze:#AE7A48;
+  --umber:#544329;
+  --ink-soft:#2D3030;
+  --ink:#21211F;
+  --ink-deep:#19191A;
+  --amber:#C58A24;
+  --terracotta:#C86439;
+  --navy:#183F68;
+  --teal:#406A66;
+  --olive:#6E7A56;
+
+  /* semantic */
+  --bg:var(--cream);
+  --fg:var(--ink);
+  --muted:var(--umber);
+  --surface:var(--sand);
+  --border:var(--sand);
+  --accent:var(--bronze);
+  --link:var(--teal);
+  --link-hover:var(--navy);
+  --danger:var(--terracotta);
+}
+/* --- base --- */
+*{box-sizing:border-box}
+body{margin:0;font-family:"Averia Serif Libre",Georgia,serif;background:var(--bg);color:var(--fg);line-height:1.6}
+main{max-width:44rem;margin:0 auto;padding:3rem 1.5rem}
+h1{font-weight:normal;font-size:2rem}
+h2{font-weight:normal;color:var(--fg);border-bottom:1px solid var(--border);padding-bottom:.3rem;margin-top:2.5rem}
+a{color:var(--link);text-decoration:none}
+a:hover{color:var(--link-hover);text-decoration:underline}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+code{background:var(--surface);color:var(--fg);padding:.12em .35em;border-radius:4px;font-size:.9em}
+.tag{display:inline-block;background:var(--surface);border-radius:999px;padding:.1em .7em;font-size:.8rem;margin-right:.4rem}
+footer{margin-top:4rem;font-size:.85rem;color:var(--muted);border-top:1px solid var(--border);padding-top:1rem}
+
+/* --- markdown-rendered content (fed-md.js) --- */
+.site-mark{text-align:center;margin:2rem 0 1rem}
+.visually-hidden{position:absolute;left:-9999px}
+.md[aria-busy="true"]{min-height:40vh}
+.md blockquote{margin:1.2rem 0;padding:.2rem 1.2rem;border-left:3px solid var(--accent);color:var(--muted)}
+.md pre{background:var(--surface);border-radius:8px;padding:1rem;overflow-x:auto}
+.md pre code{background:transparent;padding:0;font-size:.85em}
+.md table{border-collapse:collapse;width:100%;margin:1.2rem 0}
+.md th,.md td{border:1px solid var(--border);padding:.45rem .7rem;text-align:left}
+.md th{background:var(--surface);font-weight:700}
+.md img{max-width:100%;height:auto}
+.md hr{border:0;border-top:1px solid var(--border);margin:2.5rem 0}
+.md ul,.md ol{padding-left:1.4rem}
+.md li{margin:.35rem 0}
+.md-error{color:var(--danger);border:1px solid var(--danger);border-radius:8px;padding:.8rem 1rem}
+
+/* --- language switching (html[lang] set by the page script) --- */
+:root[lang="pt-BR"] .only-en{display:none}
+:root[lang="en-US"] .only-pt{display:none}
+.home-top{display:flex;justify-content:flex-end;margin-bottom:.5rem}
+
+/* --- home --- */
+/* Intro block: tagline pair + manifesto call-to-action (first 3 paragraphs
+   of index.md), centered under the logo. */
+.md-home>p:nth-child(-n+3){text-align:center;margin:.4rem 0}
+.md-home>p:nth-child(3){margin:1.6rem 0 2.5rem}
+.md-home>p:nth-child(3) a{font-size:1.1rem}
+
+/* --- manifesto page --- */
+/* Top bar: quiet, tag-sized controls in the same rounded-rectangle language
+   as the TLD tags on the home page. */
+.manifesto-top{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:2.5rem}
+.back-home{display:inline-block;background:var(--surface);border-radius:8px;padding:.3em .9em;font-size:.9rem;color:var(--fg)}
+.back-home:hover{color:var(--link-hover);text-decoration:none}
+.lang-select{font:inherit;font-size:.9rem;color:var(--fg);background-color:var(--surface);border:0;border-radius:8px;padding:.3em 2em .3em .9em;cursor:pointer;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23544329' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right .7em center}
+.lang-select:hover{color:var(--link-hover)}
+.lang-select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.manifesto h1{margin-bottom:.5rem}
+.manifesto p{margin:1.1rem 0}
+.manifesto h1+p{font-size:1.3rem;font-style:italic;color:var(--muted);line-height:1.45}
+.manifesto>p:last-child{margin-top:2rem;font-size:1.15rem}
+@media (max-width:420px){.manifesto-top{flex-wrap:wrap}.manifesto h1+p{font-size:1.15rem}}
