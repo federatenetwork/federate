@@ -109,6 +109,36 @@ Live registries (`delegated_native`/`delegated_http`) carry a monotonic
 they already verified, so neither the operator's host nor a mirror can
 rewind the namespace (same rollback rule as the root zone).
 
+## Operating a delegated TLD
+
+The whole operator workflow runs on the operator's own machine; the root is
+only involved when the delegation itself changes.
+
+1. **Owner** packages their site:
+   `federate site package ./dist --domain eu.arte --key-dir owner-key`
+   produces content-addressed blocks plus an owner-signed manifest and
+   prints the manifest hash (`--install <node-data-dir>` drops both straight
+   into a local node's stores). The owner hands the operator three things:
+   domain, owner public key, manifest hash.
+2. **Operator** signs the record:
+   `federate operator sign-record eu.arte --owner <key> --manifest-hash <hash>`.
+3. **Operator** assembles the registry:
+   `federate operator build-registry arte --records <dir>` verifies every
+   record against the operator key, signs the registry, and prints its
+   content hash. `federate operator verify-registry` re-checks any file
+   offline.
+4. **Publish** it: for `delegated_native`, serve the file from any node
+   (`registry_files = ["arte.registry.json"]` under `[node]` in the noded
+   config; the node answers `GetTldRegistry` with the exact signed bytes);
+   for `delegated_manifest`, hand the registry hash to the root to pin in
+   the TLD record. The registry `version` must increase on every change;
+   clients reject rollbacks.
+
+One `federate-noded` with a registry file plus installed site packages
+serves the registry, the manifests, and the blocks over the native
+protocol: a delegated TLD needs no infrastructure from the root beyond the
+delegation record itself.
+
 This is why the root controls **TLD existence but not every domain
 forever**: once `.femboy` is delegated, the operator key issues and signs
 domains under it without asking the root; the root's only levers are the

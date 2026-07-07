@@ -491,6 +491,7 @@ dependencies = [
 name = "federate-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "federate-bootstrap",
  "federate-client",
@@ -502,6 +503,7 @@ dependencies = [
  "federate-naming",
  "federate-node",
  "federate-protocol",
+ "federate-registry",
  "federate-resolution",
  "federate-root",
  "federate-storage",
@@ -511,6 +513,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
+ "walkdir",
 ]
 
 [[package]]
@@ -678,6 +681,7 @@ dependencies = [
  "federate-gateway",
  "federate-node",
  "federate-protocol",
+ "federate-registry",
  "federate-resolution",
  "federate-search",
  "federate-storage",

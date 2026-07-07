@@ -127,6 +127,21 @@ impl TldRegistry {
     }
 }
 
+/// Load a signed registry document from disk, keeping the exact bytes (the
+/// content address of a `delegated_manifest` registry is the hash of these
+/// bytes, so they must be served verbatim). Used by operator tooling and by
+/// registry provider nodes; signature verification stays the receiver's job.
+pub fn load_registry_file(path: &std::path::Path) -> Result<(Vec<u8>, TldRegistry)> {
+    let bytes = std::fs::read(path)?;
+    let registry: TldRegistry = serde_json::from_slice(&bytes).map_err(|e| {
+        FederateError::InvalidRoot(format!(
+            "{} is not a valid TLD registry document: {e}",
+            path.display()
+        ))
+    })?;
+    Ok((bytes, registry))
+}
+
 /// Where a domain's record comes from.
 #[derive(Debug)]
 pub enum DomainSource {
@@ -561,6 +576,28 @@ mod tests {
         reg.domains
             .insert("mal.livros".into(), domain_record(&operator, "mal.livros"));
         assert!(reg.verify("livros", &operator.node_id()).is_err());
+    }
+
+    #[test]
+    fn registry_file_roundtrip_preserves_exact_bytes() {
+        let operator = NodeIdentity::load_or_create(&tmp("reg-file-op")).unwrap();
+        let reg = registry_for(&operator, "livros", &["eu.livros"]);
+        let bytes = serde_json::to_vec(&reg).unwrap();
+        let dir = tmp("reg-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("livros.json");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let (loaded_bytes, loaded) = load_registry_file(&path).unwrap();
+        // Bytes verbatim: the content address of a delegated_manifest
+        // registry is the hash of these exact bytes.
+        assert_eq!(loaded_bytes, bytes);
+        loaded.verify("livros", &operator.node_id()).unwrap();
+
+        // Malformed file fails cleanly.
+        std::fs::write(&path, b"not a registry").unwrap();
+        assert!(load_registry_file(&path).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

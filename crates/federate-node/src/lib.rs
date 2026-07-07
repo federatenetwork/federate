@@ -56,6 +56,11 @@ pub struct NodeSection {
     /// Every node speaks the native protocol; HTTP routes are compatibility.
     #[serde(default = "default_native_listen")]
     pub native_listen: String,
+    /// Signed delegated-TLD registry files this node serves as a registry
+    /// provider (operator infrastructure: answer `GetTldRegistry` for your
+    /// own TLD from the file `federate operator build-registry` produced).
+    #[serde(default)]
+    pub registry_files: Vec<PathBuf>,
     /// Data/cache directory. Defaults to the OS data dir + "federate-node".
     #[serde(default)]
     pub data_dir: Option<PathBuf>,

@@ -196,6 +196,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // --- Local delegated-TLD registries this node serves as a provider ---
+    // (operator infrastructure: the signed file from `federate operator
+    // build-registry`). Served verbatim; receivers verify the operator
+    // signature against the root-signed TLD record, so a bad file only
+    // fails to verify, it can never inject trust.
+    let mut local_registries: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    for path in &config.node.registry_files {
+        let (bytes, registry) = federate_registry::load_registry_file(path)?;
+        tracing::info!(
+            "serving delegated registry .{} v{} ({} domains) from {}",
+            registry.tld,
+            registry.version,
+            registry.domains.len(),
+            path.display()
+        );
+        local_registries.insert(registry.tld, bytes);
+    }
+
     // --- Native Federate protocol listener (every node speaks it) ---
     if !config.node.native_listen.is_empty() {
         let native_listen: std::net::SocketAddr = config.node.native_listen.parse()?;
@@ -204,6 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             resolver: resolver.clone(),
             cache: block_cache.clone(),
             fetch_on_miss: cdn,
+            local_registries,
         });
         let listener = tokio::net::TcpListener::bind(native_listen).await?;
         tracing::info!("federate native protocol on fed-tcp://{native_listen}");
@@ -235,6 +255,9 @@ struct NativeService {
     resolver: Arc<Resolver>,
     cache: Option<Arc<federate_cdn::CdnCache>>,
     fetch_on_miss: bool,
+    /// tld -> signed registry bytes this node serves as a registry provider
+    /// (from `registry_files` in the config).
+    local_registries: std::collections::HashMap<String, Vec<u8>>,
 }
 
 #[federate_transport::async_trait]
@@ -300,20 +323,28 @@ impl federate_transport::NodeService for NativeService {
                 }
                 err(ErrorCode::NotFound, "block not held by this node")
             }
-            // v1: relay delegated TLD registries. The registry served here
-            // already passed operator-signature verification locally, and
-            // the receiver re-verifies it anyway.
-            Message::GetTldRegistry { tld } => match self.resolver.tld_registry_by_name(&tld).await
-            {
-                Ok(registry) => match serde_json::to_vec(&registry) {
-                    Ok(registry_json) => Message::TldRegistry { tld, registry_json },
-                    Err(e) => err(ErrorCode::Unavailable, &e.to_string()),
-                },
-                Err(e) => err(
-                    ErrorCode::NotFound,
-                    &format!("no verified registry for .{tld}: {e}"),
-                ),
-            },
+            // v1: delegated TLD registries. Registries this node hosts as a
+            // provider (registry_files) are served verbatim; anything else
+            // is relayed through the resolver (which verified it). The
+            // receiver re-verifies the operator signature either way.
+            Message::GetTldRegistry { tld } => {
+                if let Some(bytes) = self.local_registries.get(&tld) {
+                    return Message::TldRegistry {
+                        tld,
+                        registry_json: bytes.clone(),
+                    };
+                }
+                match self.resolver.tld_registry_by_name(&tld).await {
+                    Ok(registry) => match serde_json::to_vec(&registry) {
+                        Ok(registry_json) => Message::TldRegistry { tld, registry_json },
+                        Err(e) => err(ErrorCode::Unavailable, &e.to_string()),
+                    },
+                    Err(e) => err(
+                        ErrorCode::NotFound,
+                        &format!("no verified registry for .{tld}: {e}"),
+                    ),
+                }
+            }
             Message::GetDomainRecord { fqdn } => match self.resolver.resolve_domain(&fqdn).await {
                 Ok(record) => match serde_json::to_vec(&record) {
                     Ok(record_json) => Message::DomainRecord { fqdn, record_json },

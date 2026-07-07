@@ -85,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 listen: args.health_listen.to_string(),
                 dns_listen: args.listen.to_string(),
                 native_listen: String::new(),
+                registry_files: Vec::new(),
                 data_dir: Some(args.data_dir.clone()),
             },
             network: NetworkSection {

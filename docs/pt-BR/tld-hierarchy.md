@@ -119,6 +119,36 @@ monotônico; clientes rejeitam um registro corretamente assinado porém mais
 antigo do que um já verificado, então nem o host do operador nem um mirror
 conseguem rebobinar o namespace (mesma regra de rollback da zona raiz).
 
+## Operando um TLD delegado
+
+Todo o fluxo do operador roda na máquina do próprio operador; a raiz só
+participa quando a própria delegação muda.
+
+1. **Dono** empacota o site:
+   `federate site package ./dist --domain eu.arte --key-dir owner-key`
+   produz blocos endereçados por conteúdo mais um manifest assinado pelo
+   dono e imprime o hash do manifest (`--install <data-dir-do-nó>` grava os
+   dois direto nos stores de um nó local). O dono entrega três coisas ao
+   operador: domínio, chave pública do dono, hash do manifest.
+2. **Operador** assina o registro de domínio:
+   `federate operator sign-record eu.arte --owner <chave> --manifest-hash <hash>`.
+3. **Operador** monta o registro do TLD:
+   `federate operator build-registry arte --records <dir>` verifica cada
+   registro contra a chave do operador, assina o documento e imprime seu
+   hash de conteúdo. `federate operator verify-registry` re-verifica
+   qualquer arquivo offline.
+4. **Publicar**: para `delegated_native`, sirva o arquivo de qualquer nó
+   (`registry_files = ["arte.registry.json"]` em `[node]` na config do
+   noded; o nó responde `GetTldRegistry` com os bytes assinados exatos);
+   para `delegated_manifest`, entregue o hash do registro à raiz para fixar
+   no registro de TLD. O `version` do registro deve aumentar a cada
+   mudança; clientes rejeitam rollbacks.
+
+Um único `federate-noded` com o arquivo de registro mais os pacotes de site
+instalados serve o registro, os manifests e os blocos pelo protocolo
+nativo: um TLD delegado não precisa de nenhuma infraestrutura da raiz além
+do próprio registro de delegação.
+
 É por isso que a raiz controla **a existência dos TLDs, mas não todos os
 domínios para sempre**: uma vez que `.femboy` é delegado, a chave do
 operador emite e assina domínios sob ele sem pedir nada à raiz; as únicas

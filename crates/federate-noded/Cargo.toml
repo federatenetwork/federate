@@ -21,6 +21,7 @@ federate-node = { workspace = true }
 federate-protocol = { workspace = true }
 federate-transport = { workspace = true }
 federate-storage = { workspace = true }
+federate-registry = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

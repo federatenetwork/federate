@@ -29,3 +29,6 @@ federate-bootstrap = { workspace = true }
 federate-protocol = { workspace = true }
 federate-transport = { workspace = true }
 rand = { workspace = true }
+federate-registry = { workspace = true }
+chrono = { workspace = true }
+walkdir = { workspace = true }

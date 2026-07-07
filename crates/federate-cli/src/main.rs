@@ -110,6 +110,18 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DelegatedRegistryCmd,
     },
+    /// TLD operator commands: sign domain records and build/verify the
+    /// signed registry of a delegated TLD from your own machine
+    Operator {
+        #[command(subcommand)]
+        cmd: OperatorCmd,
+    },
+    /// Site owner commands: package a site into content-addressed blocks
+    /// plus an owner-signed manifest
+    Site {
+        #[command(subcommand)]
+        cmd: SiteCmd,
+    },
     /// Open a Federate domain in the default browser (portless URL)
     Open { domain: String },
     /// Show local node identity
@@ -264,6 +276,88 @@ enum GatewayCmd {
         /// Gateway base URL
         #[arg(long, default_value = "http://127.0.0.1:8080")]
         gateway: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OperatorCmd {
+    /// Sign a domain record with the TLD operator key
+    SignRecord {
+        /// Full domain, e.g. eu.femboy
+        domain: String,
+        /// Domain owner public key (hex, 64 chars): the key that signs the
+        /// site manifest
+        #[arg(long)]
+        owner: String,
+        /// Hash of the owner-signed site manifest (BLAKE3 hex, from
+        /// `federate site package`)
+        #[arg(long)]
+        manifest_hash: String,
+        /// Operator key directory (identity.key inside; created on first use)
+        #[arg(long, default_value = ".federate-operator")]
+        key_dir: std::path::PathBuf,
+        /// Optional record expiry (RFC 3339)
+        #[arg(long)]
+        expires: Option<String>,
+        /// Output file (default: <domain>.record.json)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Assemble signed records into the signed registry of a delegated TLD
+    BuildRegistry {
+        /// The delegated TLD this registry is for
+        tld: String,
+        /// Directory of *.record.json files (from `operator sign-record`)
+        #[arg(long, default_value = ".")]
+        records: std::path::PathBuf,
+        #[arg(long, default_value = ".federate-operator")]
+        key_dir: std::path::PathBuf,
+        /// Registry version; MUST increase on every change (clients enforce
+        /// rollback protection). Default: current unix time.
+        #[arg(long)]
+        version: Option<u64>,
+        /// Output file (default: <tld>.registry.json)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Verify a registry file offline: operator signature plus every record
+    VerifyRegistry {
+        /// Registry file (from `operator build-registry`)
+        file: std::path::PathBuf,
+        /// Expected TLD
+        #[arg(long)]
+        tld: String,
+        /// Expected operator public key (hex). Pass the key from the
+        /// root-signed TLD record for a real verification; omitted, the key
+        /// claimed inside the file is used (self-consistency check only).
+        #[arg(long)]
+        operator: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SiteCmd {
+    /// Package a site directory: content-addressed blocks + owner-signed
+    /// manifest. Prints the manifest hash the operator needs for the record.
+    Package {
+        /// Site directory (must contain index.html)
+        dir: std::path::PathBuf,
+        /// Domain this site is published under, e.g. eu.femboy
+        #[arg(long)]
+        domain: String,
+        /// Owner key directory (identity.key inside; created on first use)
+        #[arg(long, default_value = ".federate-owner")]
+        key_dir: std::path::PathBuf,
+        /// Output directory (default: <dir>.federate-package)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Manifest version
+        #[arg(long, default_value_t = 1)]
+        version: u64,
+        /// Also install blocks + manifest into a node data directory so a
+        /// local federate-noded (storage/cdn role) serves them immediately
+        #[arg(long)]
+        install: Option<std::path::PathBuf>,
     },
 }
 
@@ -548,6 +642,8 @@ async fn main() {
             cmd: DirectoryCmd::List { role, healthy },
         } => directory_list(&cli, role, healthy).await,
         Cmd::DelegatedRegistry { cmd } => delegated_registry_cmd(&cli, cmd).await,
+        Cmd::Operator { cmd } => operator_cmd(cmd),
+        Cmd::Site { cmd } => site_cmd(cmd),
         Cmd::Open { domain } => {
             // Accepts fed://... and bare domains; opens the browser through
             // the HTTP compatibility gateway (portless URL).
@@ -934,6 +1030,316 @@ async fn delegated_registry_cmd(cli: &Ctx, cmd: DelegatedRegistryCmd) {
         }
         Err(e) => die(&format!("\n[!!] cannot load the .{tld} registry: {e}")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// operator tooling (runs entirely on the operator's machine)
+// ---------------------------------------------------------------------------
+
+fn operator_cmd(cmd: OperatorCmd) {
+    match cmd {
+        OperatorCmd::SignRecord {
+            domain,
+            owner,
+            manifest_hash,
+            key_dir,
+            expires,
+            out,
+        } => {
+            let parsed = federate_naming::FederateDomain::parse(&domain)
+                .unwrap_or_else(|e| die(&format!("invalid domain: {e}")));
+            if owner.len() != 64 || !owner.bytes().all(|b| b.is_ascii_hexdigit()) {
+                die("--owner must be a 64-char hex public key");
+            }
+            if !federate_storage::is_valid_hash(&manifest_hash) {
+                die("--manifest-hash must be a 64-char BLAKE3 hex content address");
+            }
+            let operator = NodeIdentity::load_or_create(&key_dir)
+                .unwrap_or_else(|e| die(&format!("cannot load operator key: {e}")));
+            let now = chrono::Utc::now().to_rfc3339();
+            let mut record = federate_naming::DomainRecord {
+                domain: parsed.fqdn(),
+                tld: parsed.tld.clone(),
+                label: parsed.name.clone(),
+                owner_public_key: owner,
+                target_type: federate_naming::TargetType::Manifest,
+                manifest_hash,
+                service_id: None,
+                node_id: None,
+                status: federate_naming::DomainStatus::Active,
+                created_at: now.clone(),
+                updated_at: now,
+                expires_at: expires,
+                renewal: None,
+                pricing: None,
+                signature_algorithm: federate_root::SIGNATURE_ALGORITHM.into(),
+                signature: None,
+            };
+            record.signature = Some(
+                operator.sign(
+                    &record
+                        .signable_bytes()
+                        .unwrap_or_else(|e| die(&format!("cannot canonicalize record: {e}"))),
+                ),
+            );
+            let path = out.unwrap_or_else(|| format!("{}.record.json", parsed.fqdn()).into());
+            std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap())
+                .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", path.display())));
+            println!("[ok] signed domain record for {}", parsed.fqdn());
+            println!("     operator key: {}", operator.node_id());
+            println!("     written to  : {}", path.display());
+            println!(
+                "next: put it with your other records and run\n      federate operator build-registry {} --records <dir>",
+                parsed.tld
+            );
+        }
+        OperatorCmd::BuildRegistry {
+            tld,
+            records,
+            key_dir,
+            version,
+            out,
+        } => {
+            let tld = federate_naming::validate_tld_name(&tld)
+                .unwrap_or_else(|e| die(&format!("invalid TLD: {e}")));
+            let operator = NodeIdentity::load_or_create(&key_dir)
+                .unwrap_or_else(|e| die(&format!("cannot load operator key: {e}")));
+            let mut domains = std::collections::BTreeMap::new();
+            let entries = std::fs::read_dir(&records)
+                .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", records.display())));
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().and_then(|x| x.to_str()) != Some("json")
+                    || path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with(".registry.json"))
+                {
+                    continue;
+                }
+                let bytes = std::fs::read(&path)
+                    .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", path.display())));
+                let record: federate_naming::DomainRecord = match serde_json::from_slice(&bytes) {
+                    Ok(r) => r,
+                    Err(_) => continue, // not a domain record; skip quietly
+                };
+                if record.tld != tld {
+                    die(&format!(
+                        "{} is a record for .{}, not .{tld}; a registry never mixes TLDs",
+                        path.display(),
+                        record.tld
+                    ));
+                }
+                if let Err(e) = record.verify(&operator.node_id()) {
+                    die(&format!(
+                        "{} does not verify against YOUR operator key ({e}); re-sign it with `federate operator sign-record`",
+                        path.display()
+                    ));
+                }
+                println!("  + {} ({})", record.domain, record.status.as_str());
+                domains.insert(record.domain.clone(), record);
+            }
+            if domains.is_empty() {
+                die(&format!(
+                    "no valid .{tld} domain records found in {}",
+                    records.display()
+                ));
+            }
+            let version = version.unwrap_or_else(|| chrono::Utc::now().timestamp().max(0) as u64);
+            let registry = federate_registry::TldRegistry::signed(
+                &operator,
+                &tld,
+                version,
+                &chrono::Utc::now().to_rfc3339(),
+                domains,
+            )
+            .unwrap_or_else(|e| die(&format!("cannot sign registry: {e}")));
+            let bytes = serde_json::to_vec(&registry).unwrap();
+            let registry_hash = federate_storage::hash_bytes(&bytes);
+            let path = out.unwrap_or_else(|| format!("{tld}.registry.json").into());
+            std::fs::write(&path, &bytes)
+                .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", path.display())));
+            println!(
+                "\n[ok] signed .{tld} registry v{version} ({} domains)",
+                registry.domains.len()
+            );
+            println!("     operator key : {}", operator.node_id());
+            println!("     written to   : {}", path.display());
+            println!("     registry hash: {registry_hash}");
+            println!("\nto publish it:");
+            println!(
+                "  delegated_native : serve the file from your node:  [node] registry_files = [\"{}\"]",
+                path.display()
+            );
+            println!(
+                "  delegated_manifest: give the registry hash above to the Federate Root to pin in the .{tld} TLD record"
+            );
+            println!(
+                "  remember: version must INCREASE on every change (clients reject rollbacks)"
+            );
+        }
+        OperatorCmd::VerifyRegistry {
+            file,
+            tld,
+            operator,
+        } => {
+            let tld = federate_naming::validate_tld_name(&tld)
+                .unwrap_or_else(|e| die(&format!("invalid TLD: {e}")));
+            let (bytes, registry) = federate_registry::load_registry_file(&file)
+                .unwrap_or_else(|e| die(&format!("[!!] {e}")));
+            let self_check = operator.is_none();
+            let operator_key = operator.unwrap_or_else(|| registry.operator_public_key.clone());
+            registry
+                .verify(&tld, &operator_key)
+                .unwrap_or_else(|e| die(&format!("[!!] registry verification FAILED: {e}")));
+            let mut failed = 0usize;
+            for (fqdn, rec) in &registry.domains {
+                if let Err(e) = rec.verify(&operator_key) {
+                    failed += 1;
+                    println!("  [!!] {fqdn}: {e}");
+                } else {
+                    println!("  [ok] {fqdn} ({})", rec.status.as_str());
+                }
+            }
+            if failed > 0 {
+                die(&format!("[!!] {failed} record(s) failed verification"));
+            }
+            println!(
+                "\n[ok] .{tld} registry v{} verifies ({} domains, hash {})",
+                registry.version,
+                registry.domains.len(),
+                federate_storage::hash_bytes(&bytes)
+            );
+            if self_check {
+                println!(
+                    "note: verified against the key claimed INSIDE the file (self-consistency). \
+                     For a real verification pass --operator with the key from the root-signed TLD record."
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// site owner tooling
+// ---------------------------------------------------------------------------
+
+fn site_cmd(cmd: SiteCmd) {
+    let SiteCmd::Package {
+        dir,
+        domain,
+        key_dir,
+        out,
+        version,
+        install,
+    } = cmd;
+    let parsed = federate_naming::FederateDomain::parse(&domain)
+        .unwrap_or_else(|e| die(&format!("invalid domain: {e}")));
+    let owner = NodeIdentity::load_or_create(&key_dir)
+        .unwrap_or_else(|e| die(&format!("cannot load owner key: {e}")));
+
+    // Content-address every file, exactly like Node 1 does for sites/.
+    let mut files = std::collections::BTreeMap::new();
+    let mut blocks: Vec<(String, Vec<u8>)> = Vec::new();
+    for file in walkdir::WalkDir::new(&dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let rel = file
+            .path()
+            .strip_prefix(&dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes = std::fs::read(file.path())
+            .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", file.path().display())));
+        let hash = federate_storage::hash_bytes(&bytes);
+        files.insert(rel, hash.clone());
+        blocks.push((hash, bytes));
+    }
+    if !files.contains_key("index.html") {
+        die(&format!("{} has no index.html", dir.display()));
+    }
+
+    let mut manifest = Manifest {
+        domain: parsed.fqdn(),
+        version,
+        entry: "index.html".into(),
+        files,
+        owner_public_key: owner.node_id(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        signature_algorithm: federate_root::SIGNATURE_ALGORITHM.into(),
+        signature: None,
+    };
+    manifest.signature = Some(
+        owner.sign(
+            &manifest
+                .signable_bytes()
+                .unwrap_or_else(|e| die(&format!("cannot canonicalize manifest: {e}"))),
+        ),
+    );
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let manifest_hash = federate_storage::hash_bytes(&manifest_bytes);
+
+    // Write the package: blocks under their content address + the manifest
+    // under its own (exact bytes; re-serializing would change the hash).
+    let out_dir = out.unwrap_or_else(|| {
+        let mut p = dir.clone().into_os_string();
+        p.push(".federate-package");
+        p.into()
+    });
+    let blocks_dir = out_dir.join("blocks");
+    std::fs::create_dir_all(&blocks_dir)
+        .unwrap_or_else(|e| die(&format!("cannot create {}: {e}", blocks_dir.display())));
+    for (hash, bytes) in &blocks {
+        std::fs::write(blocks_dir.join(hash), bytes)
+            .unwrap_or_else(|e| die(&format!("cannot write block {hash}: {e}")));
+    }
+    std::fs::write(out_dir.join(&manifest_hash), &manifest_bytes)
+        .unwrap_or_else(|e| die(&format!("cannot write manifest: {e}")));
+
+    println!(
+        "[ok] packaged {} ({} files, {} blocks)",
+        parsed.fqdn(),
+        manifest.files.len(),
+        blocks.len()
+    );
+    println!("     owner key    : {}", owner.node_id());
+    println!("     package dir  : {}", out_dir.display());
+    println!("     manifest hash: {manifest_hash}");
+
+    // Optional install into a node's stores: blocks into the cdn block
+    // store, manifest bytes into the resolver's content-addressed manifest
+    // cache. A local federate-noded (storage/cdn role) then serves both.
+    if let Some(data_dir) = install {
+        let store = federate_storage::BlockStore::new(&data_dir.join("cdn"))
+            .unwrap_or_else(|e| die(&format!("cannot open node block store: {e}")));
+        for (hash, bytes) in &blocks {
+            store
+                .put(hash, bytes)
+                .unwrap_or_else(|e| die(&format!("cannot install block {hash}: {e}")));
+        }
+        let manifest_dir = data_dir.join("manifests");
+        std::fs::create_dir_all(&manifest_dir)
+            .unwrap_or_else(|e| die(&format!("cannot create {}: {e}", manifest_dir.display())));
+        std::fs::write(manifest_dir.join(&manifest_hash), &manifest_bytes)
+            .unwrap_or_else(|e| die(&format!("cannot install manifest: {e}")));
+        println!(
+            "     installed to : {} (blocks + manifest)",
+            data_dir.display()
+        );
+    }
+
+    println!("\nnext (give these to your TLD operator):");
+    println!("  domain       : {}", parsed.fqdn());
+    println!("  owner key    : {}", owner.node_id());
+    println!("  manifest hash: {manifest_hash}");
+    println!(
+        "the operator runs: federate operator sign-record {} --owner {} --manifest-hash {manifest_hash}",
+        parsed.fqdn(),
+        owner.node_id()
+    );
 }
 
 // ---------------------------------------------------------------------------
