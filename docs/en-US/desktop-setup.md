@@ -46,6 +46,24 @@ You should see: identity loaded, root zone fetched from Node 1, gateway on
 Open **http://home.fed** in any normal browser, portless. More sites will
 appear on the network as publishing opens up.
 
+## Clickable fed:// links
+
+Register the native scheme once and `fed://` links open in your browser
+through the compatibility door (per-user, no admin rights, no code
+signing; macOS, Linux, and Windows):
+
+```sh
+federate handler install     # register (uninstall / status also exist)
+open fed://home.fed          # macOS test; Linux: xdg-open, Windows: start
+```
+
+On macOS this generates a tiny local AppleScript applet in
+`~/Applications` (locally created, so Gatekeeper never quarantines it);
+on Linux it writes a `.desktop` entry with `x-scheme-handler/fed`; on
+Windows it writes per-user registry keys. All three just rewrite
+`fed://name/path` to `http://name/path`, so name resolution still comes
+from your Federate DNS setting (or hosts file).
+
 ## Check-up
 
 ```sh

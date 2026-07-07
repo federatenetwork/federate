@@ -137,6 +137,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: MutationCmd,
     },
+    /// Register this machine to open fed:// links in the browser
+    /// (macOS, Linux, Windows; per-user, no admin rights, no signing)
+    Handler {
+        #[command(subcommand)]
+        cmd: HandlerCmd,
+    },
     /// Open a Federate domain in the default browser (portless URL)
     Open { domain: String },
     /// Show local node identity
@@ -408,6 +414,16 @@ enum MutationCmd {
     Nonce,
     /// Inspect an applied mutation by id
     Inspect { id: String },
+}
+
+#[derive(Subcommand)]
+enum HandlerCmd {
+    /// Register the fed:// URL scheme for the current user
+    Install,
+    /// Remove the fed:// registration
+    Uninstall,
+    /// Show whether fed:// is registered
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -868,6 +884,7 @@ async fn main() {
         Cmd::Publish { cmd } => publish_cmd(&cli, cmd).await,
         Cmd::Registry { cmd } => registry_cmd(&cli, cmd).await,
         Cmd::Mutation { cmd } => mutation_cmd(&cli, cmd).await,
+        Cmd::Handler { cmd } => handler_cmd(cmd),
         Cmd::Open { domain } => {
             // Accepts fed://... and bare domains; opens the browser through
             // the HTTP compatibility gateway (portless URL).
@@ -2230,6 +2247,296 @@ async fn mutation_cmd(cli: &Ctx, cmd: MutationCmd) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// fed:// URL scheme handler registration
+// ---------------------------------------------------------------------------
+
+/// Register/unregister the fed:// scheme so links open in the browser via
+/// the HTTP compatibility door. Per-user, zero admin rights, zero signing:
+/// - macOS: a locally generated AppleScript applet (no quarantine because
+///   it is created on this machine, not downloaded) rewrites fed:// to
+///   http:// and hands it to the default browser;
+/// - Linux: a .desktop entry with x-scheme-handler/fed pointing at
+///   `federate open %u`;
+/// - Windows: HKCU registry keys pointing at `federate.exe open "%1"`.
+fn handler_cmd(cmd: HandlerCmd) {
+    match cmd {
+        HandlerCmd::Install => handler_install(),
+        HandlerCmd::Uninstall => handler_uninstall(),
+        HandlerCmd::Status => handler_status(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn handler_app_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| die("cannot locate home directory"))
+        .join("Applications/Federate URL Handler.app")
+}
+
+#[cfg(target_os = "macos")]
+const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
+
+#[cfg(target_os = "macos")]
+fn handler_install() {
+    let app = handler_app_path();
+    if let Some(parent) = app.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| die(&format!("cannot create {}: {e}", parent.display())));
+    }
+    let _ = std::fs::remove_dir_all(&app);
+
+    // The whole handler: rewrite fed://x -> http://x and let the default
+    // browser take it. Generated and compiled locally by osacompile (ships
+    // with macOS), so Gatekeeper never quarantines it.
+    let script = r#"on open location theURL
+	if theURL starts with "fed://" then
+		open location "http://" & text 7 thru -1 of theURL
+	end if
+end open location"#;
+    let src = std::env::temp_dir().join("federate-url-handler.applescript");
+    std::fs::write(&src, script).unwrap_or_else(|e| die(&format!("cannot write script: {e}")));
+    let run = |bin: &str, args: &[&str]| {
+        let out = std::process::Command::new(bin)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| die(&format!("cannot run {bin}: {e}")));
+        if !out.status.success() {
+            die(&format!(
+                "{bin} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    };
+    run(
+        "osacompile",
+        &["-o", &app.to_string_lossy(), &src.to_string_lossy()],
+    );
+    let plist = app.join("Contents/Info.plist");
+    let plist = plist.to_string_lossy().to_string();
+    run(
+        "plutil",
+        &[
+            "-replace",
+            "CFBundleIdentifier",
+            "-string",
+            "network.federate.url-handler",
+            &plist,
+        ],
+    );
+    run(
+        "plutil",
+        &[
+            "-insert",
+            "CFBundleURLTypes",
+            "-xml",
+            "<array><dict><key>CFBundleURLName</key><string>Federate URL</string>\
+             <key>CFBundleURLSchemes</key><array><string>fed</string></array></dict></array>",
+            &plist,
+        ],
+    );
+    run(
+        "plutil",
+        &["-replace", "LSUIElement", "-bool", "YES", &plist],
+    );
+    run(LSREGISTER, &["-f", &app.to_string_lossy()]);
+    let _ = std::fs::remove_file(&src);
+    println!("[ok] fed:// links now open in your browser");
+    println!("     handler: {}", app.display());
+    println!("try it: open fed://home.fed");
+}
+
+#[cfg(target_os = "macos")]
+fn handler_uninstall() {
+    let app = handler_app_path();
+    if app.exists() {
+        let _ = std::process::Command::new(LSREGISTER)
+            .args(["-u", &app.to_string_lossy()])
+            .output();
+        std::fs::remove_dir_all(&app)
+            .unwrap_or_else(|e| die(&format!("cannot remove {}: {e}", app.display())));
+        println!("[ok] fed:// handler removed");
+    } else {
+        println!("fed:// handler is not installed");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn handler_status() {
+    let app = handler_app_path();
+    if app.join("Contents/Info.plist").exists() {
+        println!("[ok] fed:// handler installed at {}", app.display());
+    } else {
+        println!("fed:// handler NOT installed; run: federate handler install");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn handler_desktop_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| die("cannot locate home directory"))
+        .join(".local/share/applications/federate-url-handler.desktop")
+}
+
+#[cfg(target_os = "linux")]
+fn handler_install() {
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|e| die(&format!("cannot locate the federate binary: {e}")));
+    let desktop = handler_desktop_path();
+    if let Some(parent) = desktop.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| die(&format!("cannot create {}: {e}", parent.display())));
+    }
+    std::fs::write(
+        &desktop,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Federate URL Handler\n\
+             Exec={} open %u\nMimeType=x-scheme-handler/fed;\nNoDisplay=true\nTerminal=false\n",
+            exe.display()
+        ),
+    )
+    .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", desktop.display())));
+    let ok = std::process::Command::new("xdg-mime")
+        .args([
+            "default",
+            "federate-url-handler.desktop",
+            "x-scheme-handler/fed",
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let _ = std::process::Command::new("update-desktop-database")
+        .arg(desktop.parent().unwrap())
+        .status();
+    if ok {
+        println!("[ok] fed:// links now open in your browser");
+        println!("     handler: {}", desktop.display());
+        println!("try it: xdg-open fed://home.fed");
+    } else {
+        die("xdg-mime is required (package xdg-utils); the .desktop file was written but not registered");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn handler_uninstall() {
+    let desktop = handler_desktop_path();
+    if desktop.exists() {
+        std::fs::remove_file(&desktop)
+            .unwrap_or_else(|e| die(&format!("cannot remove {}: {e}", desktop.display())));
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(desktop.parent().unwrap())
+            .status();
+        println!("[ok] fed:// handler removed");
+    } else {
+        println!("fed:// handler is not installed");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn handler_status() {
+    let registered = std::process::Command::new("xdg-mime")
+        .args(["query", "default", "x-scheme-handler/fed"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("federate-url-handler"))
+        .unwrap_or(false);
+    if registered {
+        println!(
+            "[ok] fed:// handler installed ({})",
+            handler_desktop_path().display()
+        );
+    } else {
+        println!("fed:// handler NOT installed; run: federate handler install");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn handler_install() {
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|e| die(&format!("cannot locate federate.exe: {e}")));
+    let command = format!("\"{}\" open \"%1\"", exe.display());
+    let run = |args: &[&str]| {
+        let ok = std::process::Command::new("reg")
+            .args(args)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            die(&format!("registry write failed: reg {}", args.join(" ")));
+        }
+    };
+    run(&[
+        "add",
+        r"HKCU\Software\Classes\fed",
+        "/ve",
+        "/d",
+        "URL:Federate Protocol",
+        "/f",
+    ]);
+    run(&[
+        "add",
+        r"HKCU\Software\Classes\fed",
+        "/v",
+        "URL Protocol",
+        "/d",
+        "",
+        "/f",
+    ]);
+    run(&[
+        "add",
+        r"HKCU\Software\Classes\fed\shell\open\command",
+        "/ve",
+        "/d",
+        &command,
+        "/f",
+    ]);
+    println!("[ok] fed:// links now open in your browser");
+    println!("try it: start fed://home.fed");
+}
+
+#[cfg(target_os = "windows")]
+fn handler_uninstall() {
+    let ok = std::process::Command::new("reg")
+        .args(["delete", r"HKCU\Software\Classes\fed", "/f"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    println!(
+        "{}",
+        if ok {
+            "[ok] fed:// handler removed"
+        } else {
+            "fed:// handler is not installed"
+        }
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn handler_status() {
+    let installed = std::process::Command::new("reg")
+        .args(["query", r"HKCU\Software\Classes\fed\shell\open\command"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if installed {
+        println!("[ok] fed:// handler installed (HKCU registry)");
+    } else {
+        println!("fed:// handler NOT installed; run: federate handler install");
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn handler_install() {
+    die("fed:// handler registration is not supported on this OS yet");
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn handler_uninstall() {
+    die("fed:// handler registration is not supported on this OS yet");
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn handler_status() {
+    die("fed:// handler registration is not supported on this OS yet");
 }
 
 // ---------------------------------------------------------------------------

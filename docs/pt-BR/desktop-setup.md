@@ -46,6 +46,25 @@ Você deve ver: identidade carregada, zona raiz obtida do Node 1, gateway em
 Abra **http://home.fed** em qualquer navegador comum, sem porta. Mais sites vão
 aparecer na rede conforme a publicação for aberta.
 
+## Links fed:// clicáveis
+
+Registre o esquema nativo uma vez e links `fed://` abrem no seu navegador
+pela porta de compatibilidade (por usuário, sem admin, sem assinatura de
+código; macOS, Linux e Windows):
+
+```sh
+federate handler install     # registrar (uninstall / status também existem)
+open fed://home.fed          # teste no macOS; Linux: xdg-open, Windows: start
+```
+
+No macOS isso gera um applet AppleScript minúsculo em `~/Applications`
+(criado localmente, então o Gatekeeper nunca o coloca em quarentena); no
+Linux escreve uma entrada `.desktop` com `x-scheme-handler/fed`; no
+Windows escreve chaves de registro por usuário. Os três apenas reescrevem
+`fed://nome/caminho` para `http://nome/caminho`, então a resolução de
+nomes continua vindo da sua configuração de DNS Federate (ou do arquivo
+hosts).
+
 ## Verificação
 
 ```sh

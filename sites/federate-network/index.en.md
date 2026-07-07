@@ -43,6 +43,9 @@ applied yet (restart the browser).
 federate publish package ./my-site --domain you.pagina
 ```
 
+- **Make fed:// links clickable** - after building the CLI (below), run
+  `federate handler install` once and addresses like `fed://home.fed`
+  open in your browser.
 - **Use the command line** - the native way to browse:
 
 ```

@@ -44,6 +44,9 @@ foi aplicado (feche e abra o navegador).
 federate publish package ./meu-site --domain voce.pagina
 ```
 
+- **Torne links fed:// clicáveis** - depois de compilar a CLI (abaixo),
+  rode `federate handler install` uma vez e endereços como
+  `fed://home.fed` passam a abrir no navegador.
 - **Use a linha de comando** - o jeito nativo de navegar:
 
 ```
