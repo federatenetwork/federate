@@ -3,9 +3,24 @@
 #   DoH survives networks that hijack port 53: one browser setting or one
 #   configuration profile, and every Federate TLD resolves anywhere.
 # - https://federate.network/...        -> Node 1 bootstrap/registry API
+# - http://federate.network/*           -> 308 to https (this host only;
+#   the priority-1 gateway catch-all still serves Federate names on
+#   plain http, browsers demand that door stays open)
+# - www.federate.network                -> 308 to the apex over https
+#   (Traefik obtains the www certificate on first hit via httpchallenge)
 # The /dns-query router outranks the bootstrap router by rule length; both
 # outrank the priority-1 gateway catch-all.
 http:
+  middlewares:
+    federate-https-redirect:
+      redirectScheme:
+        scheme: https
+        permanent: true
+    federate-www-to-apex:
+      redirectRegex:
+        regex: "^https?://www\\.federate\\.network/(.*)"
+        replacement: "https://federate.network/${1}"
+        permanent: true
   routers:
     federate-doh:
       rule: "Host(`federate.network`) && Path(`/dns-query`)"
@@ -19,19 +34,28 @@ http:
       tls:
         certResolver: letsencrypt
       service: federate-node1
-    federate-api-http:
-      rule: "Host(`federate.network`) && (PathPrefix(`/v1`) || Path(`/health`))"
-      entryPoints: [web]
-      service: federate-node1
     federate-landing-https:
       rule: "Host(`federate.network`)"
       entryPoints: [websecure]
       tls:
         certResolver: letsencrypt
       service: federate-landing
-    federate-landing-http:
+    federate-http-redirect:
       rule: "Host(`federate.network`)"
       entryPoints: [web]
+      middlewares: [federate-https-redirect]
+      service: federate-landing
+    federate-www-https:
+      rule: "Host(`www.federate.network`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      middlewares: [federate-www-to-apex]
+      service: federate-landing
+    federate-www-http:
+      rule: "Host(`www.federate.network`)"
+      entryPoints: [web]
+      middlewares: [federate-www-to-apex]
       service: federate-landing
   services:
     federate-doh:
